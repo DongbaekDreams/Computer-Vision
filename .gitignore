@@ -1,0 +1,90 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+pip-wheel-metadata/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.coverage
+.coverage.*
+htmlcov/
+.cache/
+
+# =========================
+# Virtual environments
+# =========================
+.venv/
+venv/
+env/
+ENV/
+.venv312/
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+*.nbconvert.ipynb
+
+# =========================
+# Environment / secrets
+# =========================
+.env
+.env.*
+*.env
+
+# =========================
+# VS Code
+# =========================
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# =========================
+# OS / misc
+# =========================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.tmp
+*.log
+
+# =========================
+# Tooling
+# =========================
+.tox/
+.nox/
+.pyright/
+.idea/
+/Module 2/calib_frames/
+/Module 2/calib_frames_phone/
+
+Module 1/
+
+*.pdf
+
+*.caffemodel
+*.caffemodel.*
+*.weights
+*.onnx
+*.pt
+*.pth
+*.tflite
+*.engine
+
+calib_frames/
+*.jpg
+*.png
+*.mp4
+
