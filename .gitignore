@@ -91,6 +91,8 @@ calib_frames/
 # =========================
 *.pdf
 *.jpg
+!Modulel 3/jelly.jpg
+
 *.png
 *.mp4
 *.webm
