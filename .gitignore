@@ -33,6 +33,10 @@ ENV/
 # =========================
 .ipynb_checkpoints/
 *.nbconvert.ipynb
+*experiment*.ipynb
+*experimentation*.ipynb
+*scratch*.ipynb
+*tmp*.ipynb
 
 # =========================
 # Environment / secrets
@@ -67,13 +71,33 @@ Thumbs.db
 .nox/
 .pyright/
 .idea/
+
+# =========================
+# Vestigial / deprecated code
+# =========================
+ProjectVestigial/
+**/ProjectVestigial/**
+
+# =========================
+# Module-specific scratch / data
+# =========================
 /Module 2/calib_frames/
 /Module 2/calib_frames_phone/
-
 Module 1/
+calib_frames/
 
+# =========================
+# Documents / media (not source)
+# =========================
 *.pdf
+*.jpg
+*.png
+*.mp4
+*.webm
 
+# =========================
+# Models / weights (generated or downloadable)
+# =========================
 *.caffemodel
 *.caffemodel.*
 *.weights
@@ -82,10 +106,21 @@ Module 1/
 *.pth
 *.tflite
 *.engine
+*.task
+*.prototxt
+models/*.task
+models/*.prototxt
 
-calib_frames/
-*.jpg
-*.png
-*.mp4
-*.webm
+# =========================
+# Data / artifacts
+# =========================
+*.npy
+*.npz
+*.pkl
+*.pickle
 
+# =========================
+# Local UI / debug artifacts
+# =========================
+console.log
+debug.log
