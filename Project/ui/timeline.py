@@ -7,11 +7,13 @@ import numpy as np
 
 from config import (
     BTN_BG,
+    BTN_BLUE,
     BTN_DIM,
     BTN_GREEN,
     BTN_RED,
     BTN_TEXT,
     BTN_YELLOW,
+    BTN_ROW_H,
     MAX_REC_SECONDS,
     PLAY_TICK,
     PLAY_TICK_DIM,
@@ -118,12 +120,12 @@ pinned_start_t = 0.0
 
 def draw_mode_toggle(img, x, y, h, is_live_mode):
     global live_btn_rect, review_btn_rect
-    w_each = 58
-    gap = 6
+    w_each = 72
+    gap = 8
     live_btn_rect = (x, y, x + w_each, y + h)
     review_btn_rect = (x + w_each + gap, y, x + 2 * w_each + gap, y + h)
-    draw_button(img, live_btn_rect, "LIVE", (220, 160, 60) if is_live_mode else BTN_BG, BTN_TEXT, scale=UI_SCALE_SMALL)
-    draw_button(img, review_btn_rect, "REVIEW", (220, 160, 60) if (not is_live_mode) else BTN_BG, BTN_TEXT, scale=UI_SCALE_SMALL)
+    draw_button(img, live_btn_rect, "LIVE", BTN_BLUE if is_live_mode else BTN_BG, BTN_TEXT, scale=UI_SCALE_SMALL, thick=1)
+    draw_button(img, review_btn_rect, "REVIEW", BTN_BLUE if (not is_live_mode) else BTN_BG, BTN_TEXT, scale=UI_SCALE_SMALL, thick=1)
     return review_btn_rect[2]
 
 
@@ -135,12 +137,12 @@ def draw_timeline_ui(img, x0, y0, w, h,
     cv2.rectangle(img, (x0, y0), (x0 + w, y0 + h), TL_BG, -1)
     cv2.rectangle(img, (x0, y0), (x0 + w, y0 + h), TL_BORDER, 1)
 
-    pad = 10
-    btn_row_h = 24
-    btn_row_y0 = y0 + 6
-    status_row_y = btn_row_y0 + btn_row_h + 16
-    bar_h = 14
-    bar_y0 = status_row_y + 14
+    pad = 12
+    btn_row_h = BTN_ROW_H
+    btn_row_y0 = y0 + 10
+    status_row_y = btn_row_y0 + btn_row_h + 18
+    bar_h = 16
+    bar_y0 = status_row_y + 16
     bar_y1 = bar_y0 + bar_h
     tick_y0 = bar_y1 + 10
     tick_y1 = tick_y0 + 7
@@ -148,7 +150,7 @@ def draw_timeline_ui(img, x0, y0, w, h,
 
     right_of_toggle = draw_mode_toggle(img, x0 + pad, btn_row_y0, btn_row_h, is_live_mode)
 
-    btn_w = 62
+    btn_w = 72
     gap = 8
     xR = x0 + w - pad
 
@@ -203,6 +205,7 @@ def draw_timeline_ui(img, x0, y0, w, h,
     bar_x1 = x0 + w - pad
     cv2.rectangle(img, (bar_x0, bar_y0), (bar_x1, bar_y1), TL_BAR, -1)
     cv2.rectangle(img, (bar_x0, bar_y0), (bar_x1, bar_y1), TL_BORDER, 1)
+    cv2.line(img, (bar_x0 + 1, bar_y0 + 1), (bar_x1 - 1, bar_y0 + 1), TL_BORDER, 1, cv2.LINE_AA)
 
     timeline_bar_rect = (bar_x0, bar_y0, bar_x1, bar_y1)
     window_rect = None
@@ -223,7 +226,7 @@ def draw_timeline_ui(img, x0, y0, w, h,
             x = t_to_x(t)
             if last_x is None or abs(x - last_x) >= 54:
                 cv2.line(img, (x, tick_y0), (x, tick_y1), TL_TICK, 1, cv2.LINE_AA)
-                cv2.putText(img, f"{int(round(t))}s", (x - 10, label_y), UI_FONT, 0.38, TL_TEXT_DIM, 1, cv2.LINE_AA)
+                cv2.putText(img, f"{int(round(t))}s", (x - 10, label_y), UI_FONT, 0.40, TL_TEXT_DIM, 1, cv2.LINE_AA)
                 last_x = x
             t += step
 
