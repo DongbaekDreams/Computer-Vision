@@ -11,7 +11,6 @@ from config import (
     ACCENT,
     APP_PAD,
     CAM_H,
-    CAM_INDEX,
     CAM_W,
     CARD_GAP,
     CLIP_H_FRAC,
@@ -55,8 +54,16 @@ from config import (
     ensure_task_file,
     get_polar_palette,
 )
+from camera_config import (
+    LastCameraSetup,
+    detect_connected_cameras,
+    load_calibrations,
+    load_last_setup,
+    save_last_setup,
+)
 from pose_processor import ANGLE_KEYS, process_pose, round_deg
 from state import angles_live, angles_rec, pose_live, pose_rec, t_live, t_rec
+from triangulation import process_multi_cam_poses
 from ui.console import console_line
 from ui.drawing import (
     draw_controls_section,
@@ -90,6 +97,90 @@ except Exception as e:
 
 # Timeline state (live_mode, recording, etc.)
 from ui import timeline as timeline_module
+
+# Default camera index when no calibration/setup exists
+DEFAULT_CAM_INDEX = 0
+WINDOW_CAM_SELECT = "Camera selection - number keys toggle, P=primary, Enter=confirm"
+
+
+def _run_camera_confirmation_ui(calibrations, last_setup):
+    """
+    Show which calibrated cameras are connected; user toggles selection and confirms.
+    Returns (list of selected camera_ids for use, primary_camera_id) or (None, None) to abort.
+    """
+    connected = detect_connected_cameras()
+    calibrated_ids = [str(c.index) for c in connected if str(c.index) in calibrations]
+    if not calibrated_ids:
+        return None, None
+    selected = set(last_setup.selected_camera_ids) if last_setup else set()
+    selected = {cid for cid in selected if cid in calibrated_ids}
+    if not selected:
+        selected = {calibrated_ids[0]}
+    primary = last_setup.primary_camera_id if last_setup else calibrated_ids[0]
+    if primary not in calibrated_ids:
+        primary = calibrated_ids[0]
+
+    # Open preview for each calibrated connected camera
+    backend = cv2.CAP_DSHOW if hasattr(cv2, "CAP_DSHOW") else cv2.CAP_ANY
+    caps = []
+    for info in connected:
+        cid = str(info.index)
+        if cid not in calibrated_ids:
+            continue
+        cap = cv2.VideoCapture(info.index, backend)
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            caps.append((cid, cap))
+
+    cv2.namedWindow(WINDOW_CAM_SELECT, cv2.WINDOW_NORMAL)
+    print("Camera selection: number keys toggle, P=primary, Enter=confirm")
+    while True:
+        for cid, cap in caps:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            disp = frame.copy()
+            sel = "SELECTED" if cid in selected else "off"
+            prim = " [PRIMARY]" if cid == primary else ""
+            cv2.putText(
+                disp, f"Cam {cid} {sel}{prim}",
+                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
+            )
+            cv2.putText(
+                disp, "Key=toggle | P=primary | Enter=done",
+                (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1
+            )
+            cv2.imshow(f"Cam {cid}", disp)
+        key = cv2.waitKey(1) & 0xFF
+        if key == 13 or key == 10:
+            break
+        if key == ord("p") and selected:
+            primary = str(min(int(x) for x in selected))
+            print(f"Primary: camera {primary}")
+        if ord("0") <= key <= ord("9"):
+            k = str(key - ord("0"))
+            if k in calibrated_ids:
+                if k in selected:
+                    selected.discard(k)
+                else:
+                    selected.add(k)
+                if primary not in selected and selected:
+                    primary = min(selected, key=lambda x: int(x))
+                print(f"Selected: {sorted(selected)}, primary: {primary}")
+        if key == ord("q"):
+            for _, cap in caps:
+                cap.release()
+            for cid, _ in caps:
+                cv2.destroyWindow(f"Cam {cid}")
+            cv2.destroyWindow(WINDOW_CAM_SELECT)
+            return None, None
+    for _, cap in caps:
+        cap.release()
+    for cid, _ in caps:
+        cv2.destroyWindow(f"Cam {cid}")
+    cv2.destroyWindow(WINDOW_CAM_SELECT)
+    return sorted(selected, key=int), primary
 
 
 def _enable_high_dpi():
@@ -242,13 +333,48 @@ def main():
     )
     landmarker = vision.PoseLandmarker.create_from_options(options)
 
-    cap = cv2.VideoCapture(CAM_INDEX, cv2.CAP_DSHOW)
-    if not cap.isOpened():
-        raise RuntimeError("Camera not available")
+    calibrations = load_calibrations()
+    last_setup = load_last_setup()
+    active_camera_ids = None
+    primary_camera_id = None
+    caps_by_id = {}
+    use_triangulation = False
 
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_W)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    connected = detect_connected_cameras()
+    calibrated_ids = [str(c.index) for c in connected if str(c.index) in calibrations]
+    if calibrations and calibrated_ids:
+        selected_ids, primary_id = _run_camera_confirmation_ui(calibrations, last_setup)
+        if selected_ids and primary_id:
+            active_camera_ids = selected_ids
+            primary_camera_id = primary_id
+            use_triangulation = (
+                last_setup.use_triangulation
+                and len(active_camera_ids) >= 2
+                and all(
+                    calibrations.get(cid) and getattr(calibrations.get(cid), "extrinsics", None)
+                    for cid in active_camera_ids
+                )
+            )
+            save_last_setup(LastCameraSetup(
+                selected_camera_ids=active_camera_ids,
+                primary_camera_id=primary_camera_id,
+                use_triangulation=last_setup.use_triangulation,
+            ))
+    if active_camera_ids is None:
+        active_camera_ids = [str(DEFAULT_CAM_INDEX)]
+        primary_camera_id = str(DEFAULT_CAM_INDEX)
+        use_triangulation = False
+
+    backend = cv2.CAP_DSHOW if hasattr(cv2, "CAP_DSHOW") else cv2.CAP_ANY
+    for cid in active_camera_ids:
+        idx = int(cid)
+        cap = cv2.VideoCapture(idx, backend)
+        if not cap.isOpened():
+            raise RuntimeError(f"Camera {idx} not available")
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_W)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        caps_by_id[cid] = cap
 
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW, VIEW_W, VIEW_H)
@@ -301,31 +427,45 @@ def main():
 
     try:
         while True:
-            ok, frame = cap.read()
-            if not ok or frame is None:
+            frames_by_id = {}
+            for cid in active_camera_ids:
+                cap = caps_by_id[cid]
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    break
+                if MIRROR_VIEW:
+                    frame = cv2.flip(frame, 1)
+                frames_by_id[cid] = frame
+            if len(frames_by_id) != len(active_camera_ids):
                 break
 
-            if MIRROR_VIEW:
-                frame = cv2.flip(frame, 1)
-
             t_inf0 = time.time()
-
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-
             ts_ms = int((time.time() - t0) * 1000.0)
-            result = landmarker.detect_for_video(mp_img, ts_ms)
-
+            per_cam_results = []
+            for cid in active_camera_ids:
+                frame = frames_by_id[cid]
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                result = landmarker.detect_for_video(mp_img, ts_ms)
+                lm = (
+                    result.pose_landmarks[0]
+                    if (result.pose_landmarks and len(result.pose_landmarks) > 0)
+                    else None
+                )
+                h, w = frame.shape[:2]
+                out = process_pose(lm, h, w)
+                per_cam_results.append((cid, *out))
             infer_ms = (time.time() - t_inf0) * 1000.0
 
             frame_i += 1
             if frame_i % 10 == 0:
                 fps = frame_i / max(1e-6, (time.time() - t0))
 
+            primary_frame = frames_by_id[primary_camera_id]
             if show_camera_bg:
-                video = frame.copy()
+                video = primary_frame.copy()
             else:
-                video = np.zeros_like(frame)
+                video = np.zeros_like(primary_frame)
                 video[:] = (8, 8, 8)
 
             L_hip_i = L_knee_i = L_ank_i = None
@@ -336,33 +476,34 @@ def main():
             pts_norm_snapshot = None
             vis_snapshot = None
 
-            lm = (
-                result.pose_landmarks[0]
-                if (result.pose_landmarks and len(result.pose_landmarks) > 0)
-                else None
-            )
-            h, w = frame.shape[:2]
-            out = process_pose(lm, h, w)
+            if use_triangulation and len(per_cam_results) >= 2:
+                vals, _pts_3d = process_multi_cam_poses(per_cam_results, calibrations)
+                for r in per_cam_results:
+                    if r[0] == primary_camera_id:
+                        _, pts, vis, _, _, _, pts_norm_snapshot, vis_snapshot = r
+                        if pts is not None:
+                            draw_skeleton_on_video(
+                                video, pts, vis, show_skeleton, show_joints, show_vis
+                            )
+                        break
+            else:
+                for r in per_cam_results:
+                    if r[0] == primary_camera_id:
+                        _, pts, vis, _, _, vals, pts_norm_snapshot, vis_snapshot = r
+                        if pts is not None:
+                            draw_skeleton_on_video(
+                                video, pts, vis, show_skeleton, show_joints, show_vis
+                            )
+                        break
+                else:
+                    if per_cam_results:
+                        _, _, _, _, _, vals, pts_norm_snapshot, vis_snapshot = per_cam_results[0]
 
-            if out[0] is not None:
-                pts, vis, _, _, vals, pts_norm_snapshot, vis_snapshot = out
-                L_hip_i, R_hip_i = round_deg(vals["Hip L"]), round_deg(vals["Hip R"])
-                L_knee_i, R_knee_i = (
-                    round_deg(vals["Knee L"]),
-                    round_deg(vals["Knee R"]),
-                )
-                L_ank_i, R_ank_i = round_deg(vals["Ank L"]), round_deg(vals["Ank R"])
-                L_sho_i, R_sho_i = (
-                    round_deg(vals["Shoulder L"]),
-                    round_deg(vals["Shoulder R"]),
-                )
-                L_elb_i, R_elb_i = (
-                    round_deg(vals["Elbow L"]),
-                    round_deg(vals["Elbow R"]),
-                )
-                draw_skeleton_on_video(
-                    video, pts, vis, show_skeleton, show_joints, show_vis
-                )
+            L_hip_i, R_hip_i = round_deg(vals["Hip L"]), round_deg(vals["Hip R"])
+            L_knee_i, R_knee_i = round_deg(vals["Knee L"]), round_deg(vals["Knee R"])
+            L_ank_i, R_ank_i = round_deg(vals["Ank L"]), round_deg(vals["Ank R"])
+            L_sho_i, R_sho_i = round_deg(vals["Shoulder L"]), round_deg(vals["Shoulder R"])
+            L_elb_i, R_elb_i = round_deg(vals["Elbow L"]), round_deg(vals["Elbow R"])
 
             # Live buffer
             t_app = float(time.time() - t0)
@@ -480,10 +621,11 @@ def main():
                     if timeline_module.recording
                     else ("DONE" if timeline_module.record_done else "READY")
                 )
+                angle_mode = "3D" if use_triangulation else "2D"
                 y = draw_panel_header(
                     panel,
                     "Pose Dashboard",
-                    subtitle=f"{mode_txt} | REC {rec_txt} | cap {int(MAX_REC_SECONDS)}s",
+                    subtitle=f"{mode_txt} | REC {rec_txt} | {angle_mode} | cap {int(MAX_REC_SECONDS)}s",
                 )
                 palette_label = get_polar_palette(selected_palette_key)["label"]
 
@@ -700,7 +842,8 @@ def main():
                 palette_gallery_open = not palette_gallery_open
 
     finally:
-        cap.release()
+        for cap in caps_by_id.values():
+            cap.release()
         cv2.destroyAllWindows()
         landmarker.close()
         if SHOW_CONSOLE:
