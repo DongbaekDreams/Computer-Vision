@@ -56,11 +56,19 @@ from config import (
 )
 from camera_config import (
     LastCameraSetup,
+    ThreadedCapture,
+    apply_rotation,
     detect_connected_cameras,
+    is_url_source,
     load_calibrations,
     load_last_setup,
+    open_camera,
     save_last_setup,
 )
+
+# Max allowed time gap between frames from different cameras for triangulation (seconds).
+# If frames are further apart, fall back to 2D angles from the primary camera only.
+SYNC_TOLERANCE_S = 0.25
 from pose_processor import ANGLE_KEYS, process_pose, round_deg
 from state import angles_live, angles_rec, pose_live, pose_rec, t_live, t_rec
 from triangulation import process_multi_cam_poses
@@ -103,84 +111,94 @@ DEFAULT_CAM_INDEX = 0
 WINDOW_CAM_SELECT = "Camera selection - number keys toggle, P=primary, Enter=confirm"
 
 
+def _short_label(cam_id: str) -> str:
+    if is_url_source(cam_id):
+        return cam_id.split("//")[-1][:30]
+    return f"Cam {cam_id}"
+
+
 def _run_camera_confirmation_ui(calibrations, last_setup):
     """
-    Show which calibrated cameras are connected; user toggles selection and confirms.
-    Returns (list of selected camera_ids for use, primary_camera_id) or (None, None) to abort.
+    Show which calibrated cameras are available (local + URL); user toggles
+    selection and confirms.
+    Returns (list of selected camera_ids, primary_camera_id) or (None, None).
     """
     connected = detect_connected_cameras()
-    calibrated_ids = [str(c.index) for c in connected if str(c.index) in calibrations]
-    if not calibrated_ids:
+    # Build list of all calibrated camera IDs that are reachable
+    available_ids: list[str] = []
+    for c in connected:
+        cid = str(c.index)
+        if cid in calibrations:
+            available_ids.append(cid)
+    # Also include URL-based calibrated cameras from last setup
+    if last_setup:
+        for cid in last_setup.selected_camera_ids:
+            if is_url_source(cid) and cid in calibrations and cid not in available_ids:
+                available_ids.append(cid)
+    if not available_ids:
         return None, None
-    selected = set(last_setup.selected_camera_ids) if last_setup else set()
-    selected = {cid for cid in selected if cid in calibrated_ids}
-    if not selected:
-        selected = {calibrated_ids[0]}
-    primary = last_setup.primary_camera_id if last_setup else calibrated_ids[0]
-    if primary not in calibrated_ids:
-        primary = calibrated_ids[0]
 
-    # Open preview for each calibrated connected camera
-    backend = cv2.CAP_DSHOW if hasattr(cv2, "CAP_DSHOW") else cv2.CAP_ANY
+    selected = set(last_setup.selected_camera_ids) if last_setup else set()
+    selected = {cid for cid in selected if cid in available_ids}
+    if not selected:
+        selected = {available_ids[0]}
+    primary = last_setup.primary_camera_id if last_setup else available_ids[0]
+    if primary not in available_ids:
+        primary = available_ids[0]
+
     caps = []
-    for info in connected:
-        cid = str(info.index)
-        if cid not in calibrated_ids:
-            continue
-        cap = cv2.VideoCapture(info.index, backend)
+    for cid in available_ids:
+        cap = open_camera(cid, 640, 480)
         if cap.isOpened():
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             caps.append((cid, cap))
 
-    cv2.namedWindow(WINDOW_CAM_SELECT, cv2.WINDOW_NORMAL)
-    print("Camera selection: number keys toggle, P=primary, Enter=confirm")
+    print("Camera confirmation: 0-9=toggle local | P=cycle primary | Enter=confirm")
     while True:
         for cid, cap in caps:
             ok, frame = cap.read()
             if not ok or frame is None:
-                continue
+                frame = np.zeros((480, 640, 3), dtype=np.uint8)
             disp = frame.copy()
             sel = "SELECTED" if cid in selected else "off"
             prim = " [PRIMARY]" if cid == primary else ""
-            cv2.putText(
-                disp, f"Cam {cid} {sel}{prim}",
-                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2
-            )
-            cv2.putText(
-                disp, "Key=toggle | P=primary | Enter=done",
-                (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1
-            )
-            cv2.imshow(f"Cam {cid}", disp)
+            label = _short_label(cid)
+            cv2.putText(disp, f"{label} {sel}{prim}",
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
+            cv2.putText(disp, "0-9=toggle | P=primary | Enter=done",
+                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+            cv2.imshow(f"Cam: {label}", disp)
         key = cv2.waitKey(1) & 0xFF
         if key == 13 or key == 10:
             break
-        if key == ord("p") and selected:
-            primary = str(min(int(x) for x in selected))
-            print(f"Primary: camera {primary}")
+        if key in (ord("p"), ord("P")) and selected:
+            sel_list = sorted(selected)
+            try:
+                idx = sel_list.index(primary)
+                primary = sel_list[(idx + 1) % len(sel_list)]
+            except ValueError:
+                primary = sel_list[0]
+            print(f"  Primary: {primary}")
         if ord("0") <= key <= ord("9"):
             k = str(key - ord("0"))
-            if k in calibrated_ids:
+            if k in available_ids:
                 if k in selected:
                     selected.discard(k)
                 else:
                     selected.add(k)
                 if primary not in selected and selected:
-                    primary = min(selected, key=lambda x: int(x))
-                print(f"Selected: {sorted(selected)}, primary: {primary}")
+                    primary = sorted(selected)[0]
+                print(f"  Selected: {sorted(selected)}, primary: {primary}")
         if key == ord("q"):
             for _, cap in caps:
                 cap.release()
             for cid, _ in caps:
-                cv2.destroyWindow(f"Cam {cid}")
-            cv2.destroyWindow(WINDOW_CAM_SELECT)
+                cv2.destroyWindow(f"Cam: {_short_label(cid)}")
             return None, None
     for _, cap in caps:
         cap.release()
     for cid, _ in caps:
-        cv2.destroyWindow(f"Cam {cid}")
-    cv2.destroyWindow(WINDOW_CAM_SELECT)
-    return sorted(selected, key=int), primary
+        cv2.destroyWindow(f"Cam: {_short_label(cid)}")
+    return sorted(selected), primary
 
 
 def _enable_high_dpi():
@@ -337,11 +355,16 @@ def main():
     last_setup = load_last_setup()
     active_camera_ids = None
     primary_camera_id = None
-    caps_by_id = {}
     use_triangulation = False
+    camera_rotations: dict[str, int] = {}
 
     connected = detect_connected_cameras()
     calibrated_ids = [str(c.index) for c in connected if str(c.index) in calibrations]
+    # Also include URL-based cameras from last setup
+    if last_setup:
+        for cid in last_setup.selected_camera_ids:
+            if is_url_source(cid) and cid in calibrations and cid not in calibrated_ids:
+                calibrated_ids.append(cid)
     if calibrations and calibrated_ids:
         selected_ids, primary_id = _run_camera_confirmation_ui(calibrations, last_setup)
         if selected_ids and primary_id:
@@ -355,26 +378,25 @@ def main():
                     for cid in active_camera_ids
                 )
             )
+            camera_rotations = dict(last_setup.camera_rotations)
             save_last_setup(LastCameraSetup(
                 selected_camera_ids=active_camera_ids,
                 primary_camera_id=primary_camera_id,
                 use_triangulation=last_setup.use_triangulation,
+                camera_rotations=camera_rotations,
             ))
     if active_camera_ids is None:
         active_camera_ids = [str(DEFAULT_CAM_INDEX)]
         primary_camera_id = str(DEFAULT_CAM_INDEX)
         use_triangulation = False
 
-    backend = cv2.CAP_DSHOW if hasattr(cv2, "CAP_DSHOW") else cv2.CAP_ANY
+    threaded_caps: dict[str, ThreadedCapture] = {}
     for cid in active_camera_ids:
-        idx = int(cid)
-        cap = cv2.VideoCapture(idx, backend)
+        cap = open_camera(cid, CAM_W, CAM_H)
         if not cap.isOpened():
-            raise RuntimeError(f"Camera {idx} not available")
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAM_W)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAM_H)
+            raise RuntimeError(f"Camera {cid} not available")
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        caps_by_id[cid] = cap
+        threaded_caps[cid] = ThreadedCapture(cap)
 
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW, VIEW_W, VIEW_H)
@@ -427,22 +449,38 @@ def main():
 
     try:
         while True:
+            # Grab the latest frame from each threaded capture (never blocks)
             frames_by_id = {}
+            frame_times = {}
             for cid in active_camera_ids:
-                cap = caps_by_id[cid]
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    break
+                frame, ts = threaded_caps[cid].latest()
+                if frame is None:
+                    continue
+                rot = camera_rotations.get(cid, 0)
+                if rot:
+                    frame = apply_rotation(frame, rot)
                 if MIRROR_VIEW:
                     frame = cv2.flip(frame, 1)
                 frames_by_id[cid] = frame
-            if len(frames_by_id) != len(active_camera_ids):
-                break
+                frame_times[cid] = ts
+            if primary_camera_id not in frames_by_id:
+                # Primary camera hasn't produced a frame yet; wait briefly
+                time.sleep(0.005)
+                continue
+
+            # Check if all frames are temporally close enough for triangulation
+            frames_in_sync = True
+            if len(frame_times) >= 2:
+                times = list(frame_times.values())
+                if max(times) - min(times) > SYNC_TOLERANCE_S:
+                    frames_in_sync = False
 
             t_inf0 = time.time()
             ts_ms = int((time.time() - t0) * 1000.0)
             per_cam_results = []
             for cid in active_camera_ids:
+                if cid not in frames_by_id:
+                    continue
                 frame = frames_by_id[cid]
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
@@ -476,7 +514,7 @@ def main():
             pts_norm_snapshot = None
             vis_snapshot = None
 
-            if use_triangulation and len(per_cam_results) >= 2:
+            if use_triangulation and len(per_cam_results) >= 2 and frames_in_sync:
                 vals, _pts_3d = process_multi_cam_poses(per_cam_results, calibrations)
                 for r in per_cam_results:
                     if r[0] == primary_camera_id:
@@ -842,8 +880,8 @@ def main():
                 palette_gallery_open = not palette_gallery_open
 
     finally:
-        for cap in caps_by_id.values():
-            cap.release()
+        for tc in threaded_caps.values():
+            tc.release()
         cv2.destroyAllWindows()
         landmarker.close()
         if SHOW_CONSOLE:

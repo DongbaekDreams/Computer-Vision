@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+import time
 
 import cv2
 import numpy as np
@@ -22,9 +26,97 @@ LAST_SETUP_PATH = _PROJECT_DIR / "last_camera_setup.json"
 
 @dataclass
 class CameraInfo:
-    """Detected camera: index and optional label from last setup."""
-    index: int
+    """Detected camera: index (int) or URL source (str), plus optional label."""
+    index: int  # -1 for URL-based cameras
     label: str = ""
+    source: str = ""  # URL string for IP cameras; empty for index-based
+
+
+def is_url_source(camera_id: str) -> bool:
+    """True if camera_id is a URL rather than an integer index."""
+    return camera_id.startswith("http://") or camera_id.startswith("https://") or camera_id.startswith("rtsp://")
+
+
+_INDEX_BACKENDS = []
+for _b in ("CAP_DSHOW", "CAP_MSMF"):
+    if hasattr(cv2, _b):
+        _INDEX_BACKENDS.append(getattr(cv2, _b))
+if not _INDEX_BACKENDS:
+    _INDEX_BACKENDS.append(cv2.CAP_ANY)
+
+
+def open_camera(camera_id: str, width: int = 1280, height: int = 720) -> cv2.VideoCapture:
+    """
+    Open a VideoCapture for a camera_id that is either an integer index
+    (as a string like "0") or a URL ("http://...", "rtsp://...").
+    For URL cameras, minimizes internal buffering to reduce latency.
+    For index cameras, tries DSHOW first (more reliable for real hardware),
+    then falls back to MSMF.
+    """
+    if is_url_source(camera_id):
+        cap = cv2.VideoCapture(camera_id, cv2.CAP_FFMPEG)
+        if cap.isOpened():
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    else:
+        idx = int(camera_id)
+        cap = cv2.VideoCapture()
+        for backend in _INDEX_BACKENDS:
+            cap = cv2.VideoCapture(idx, backend)
+            if cap.isOpened():
+                break
+            cap.release()
+    if cap.isOpened():
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    return cap
+
+
+def drain_stale_frames(cap: cv2.VideoCapture, max_drain: int = 3) -> None:
+    """
+    Grab (but don't decode) up to max_drain queued frames from an IP camera
+    to get closer to the live edge. Call before the "real" read().
+    """
+    for _ in range(max_drain):
+        cap.grab()
+
+
+import threading
+
+
+class ThreadedCapture:
+    """
+    Continuously reads frames from a VideoCapture in a background thread.
+    The main thread can call latest() at any time to get the most recent
+    frame without blocking. Keeps only the newest frame (no queue buildup).
+    """
+
+    def __init__(self, cap: cv2.VideoCapture):
+        self.cap = cap
+        self._lock = threading.Lock()
+        self._frame = None
+        self._timestamp = 0.0
+        self._running = True
+        self._thread = threading.Thread(target=self._reader, daemon=True)
+        self._thread.start()
+
+    def _reader(self):
+        while self._running:
+            ok, frame = self.cap.read()
+            if ok and frame is not None:
+                t = time.time()
+                with self._lock:
+                    self._frame = frame
+                    self._timestamp = t
+
+    def latest(self):
+        """Return (frame, wall_clock_timestamp) or (None, 0.0) if no frame yet."""
+        with self._lock:
+            return self._frame, self._timestamp
+
+    def release(self):
+        self._running = False
+        self._thread.join(timeout=2.0)
+        self.cap.release()
 
 
 @dataclass
@@ -104,18 +196,23 @@ class Calibration:
         )
 
 
+ROTATION_OPTIONS = [0, 90, 180, 270]
+
+
 @dataclass
 class LastCameraSetup:
     """Last-used camera selection for the dashboard."""
     selected_camera_ids: list[str]
     primary_camera_id: str
     use_triangulation: bool = True
+    camera_rotations: dict[str, int] = field(default_factory=dict)  # cam_id -> degrees (0/90/180/270)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "selected_camera_ids": list(self.selected_camera_ids),
             "primary_camera_id": self.primary_camera_id,
             "use_triangulation": self.use_triangulation,
+            "camera_rotations": dict(self.camera_rotations),
         }
 
     @classmethod
@@ -124,7 +221,19 @@ class LastCameraSetup:
             selected_camera_ids=list(d.get("selected_camera_ids", [])),
             primary_camera_id=str(d.get("primary_camera_id", "")),
             use_triangulation=bool(d.get("use_triangulation", True)),
+            camera_rotations=dict(d.get("camera_rotations", {})),
         )
+
+
+def apply_rotation(frame: np.ndarray, degrees: int) -> np.ndarray:
+    """Rotate a frame by 0, 90, 180, or 270 degrees."""
+    if degrees == 180:
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    if degrees == 90:
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    if degrees == 270:
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return frame
 
 
 # ---------------------------------------------------------------------------
@@ -132,18 +241,80 @@ class LastCameraSetup:
 # ---------------------------------------------------------------------------
 
 
-def detect_connected_cameras(max_index: int = 10) -> list[CameraInfo]:
+_PROBE_CODE = r"""
+import cv2, json, sys, time
+idx = int(sys.argv[1])
+backends = []
+for b in ('CAP_DSHOW', 'CAP_MSMF'):
+    if hasattr(cv2, b):
+        backends.append((b, getattr(cv2, b)))
+if not backends:
+    backends.append(('ANY', cv2.CAP_ANY))
+for bname, be in backends:
+    cap = cv2.VideoCapture(idx, be)
+    if not cap.isOpened():
+        cap.release()
+        continue
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    # Read a few frames; first can be stale
+    avg = 0.0
+    ok = False
+    for _ in range(4):
+        ok, f = cap.read()
+        if ok and f is not None:
+            avg = float(f.mean())
+    cap.release()
+    if not ok:
+        continue
+    # Reject pure-green frames (DroidCam MSMF bug: R=0 G=136 B=0 -> avg~45)
+    # and pure-black frames (scanner devices)
+    if avg < 2.0:
+        continue
+    # Check for green-only pattern (all green channel, no red/blue)
+    if ok and f is not None:
+        r_ch, g_ch, b_ch = f[:,:,2].mean(), f[:,:,1].mean(), f[:,:,0].mean()
+        if g_ch > 50 and r_ch < 5 and b_ch < 5:
+            continue
+    print(json.dumps({"i": idx, "w": w, "h": h, "be": bname, "avg": avg}))
+    sys.exit(0)
+sys.exit(1)
+"""
+
+
+def _probe_single_index(index: int, timeout: float = 8.0) -> CameraInfo | None:
     """
-    Probe OpenCV indices 0..max_index-1 and return list of cameras that open.
-    Uses CAP_DSHOW on Windows for more reliable indexing.
+    Probe a single camera index in a subprocess to avoid hanging the caller.
+    Rejects devices that only produce black or green frames.
     """
-    backend = cv2.CAP_DSHOW if hasattr(cv2, "CAP_DSHOW") else cv2.CAP_ANY
+    try:
+        r = subprocess.run(
+            [sys.executable, "-c", _PROBE_CODE, str(index)],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            info = json.loads(r.stdout.strip())
+            be = info.get("be", "")
+            return CameraInfo(
+                index=info["i"],
+                label=f"Camera {info['i']} ({info['w']}x{info['h']}, {be})",
+            )
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, KeyError):
+        pass
+    return None
+
+
+def detect_connected_cameras(max_index: int = 5) -> list[CameraInfo]:
+    """
+    Probe OpenCV indices 0..max_index-1 in isolated subprocesses.
+    Each index gets a timeout so a hung device can't block detection.
+    Rejects devices that produce only black or green frames.
+    """
     result: list[CameraInfo] = []
     for i in range(max_index):
-        cap = cv2.VideoCapture(i, backend)
-        if cap.isOpened():
-            result.append(CameraInfo(index=i, label=""))
-            cap.release()
+        info = _probe_single_index(i)
+        if info is not None:
+            result.append(info)
     return result
 
 
