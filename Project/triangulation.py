@@ -184,10 +184,20 @@ def compute_angles_3d(
     return vals
 
 
+def apply_metric_scale(pts_3d: np.ndarray, metric_scale: float | None) -> np.ndarray:
+    """Scale triangulated points into user-aligned metric units."""
+    if metric_scale is None or not np.isfinite(metric_scale) or metric_scale <= 0.0:
+        return pts_3d
+    if abs(metric_scale - 1.0) < 1e-6:
+        return pts_3d
+    return (pts_3d.astype(np.float64) * float(metric_scale)).astype(np.float32)
+
+
 def process_multi_cam_poses(
     per_cam_results: list[tuple[str, Any, Any, Any, dict, np.ndarray | None, np.ndarray | None]],
     calibrations: dict[str, Calibration],
-) -> tuple[dict[str, float], np.ndarray | None]:
+    metric_scale: float | None = None,
+) -> tuple[dict[str, float], np.ndarray | None, np.ndarray | None]:
     """
     Combine per-camera pose results and triangulate to get 3D angles.
 
@@ -198,6 +208,7 @@ def process_multi_cam_poses(
     Returns:
         vals: ANGLE_KEYS -> angle in degrees (or np.nan).
         pts_3d: (33, 3) or None if triangulation not possible.
+        vis_agg: (33,) triangulation confidence per landmark, or None.
     """
     per_cam_pts_norm: dict[str, np.ndarray] = {}
     per_cam_vis: dict[str, np.ndarray] = {}
@@ -214,11 +225,13 @@ def process_multi_cam_poses(
     if len(per_cam_pts_norm) < 2:
         # Fallback: use first camera's 2D angles if available
         if per_cam_results:
-            _, _, _, _, vals, _, _, _ = per_cam_results[0]
-            return vals, None
-        return {k: np.nan for k in ANGLE_KEYS}, None
+            # (cam_id, pts, vis, pts_norm, vis_arr, vals, pts_norm_snapshot, vis_snapshot)
+            _, _, _, _, _, vals, _, _ = per_cam_results[0]
+            return vals, None, None
+        return {k: np.nan for k in ANGLE_KEYS}, None, None
     pts_3d, vis_agg = triangulate_landmarks(
         calibrations, per_cam_pts_norm, per_cam_vis, per_cam_image_size
     )
+    pts_3d = apply_metric_scale(pts_3d, metric_scale)
     vals = compute_angles_3d(pts_3d, vis_agg)
-    return vals, pts_3d
+    return vals, pts_3d, vis_agg

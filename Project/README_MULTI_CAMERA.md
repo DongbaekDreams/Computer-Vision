@@ -16,12 +16,16 @@ The dashboard supports 1+ cameras. With two or more **calibrated** cameras (incl
    python calibrate_cameras.py
    ```
 
-2. In the calibration script:
+2. In `calibrate_cameras.py`:
    - Select which connected cameras to use (number keys to toggle, P to set primary, Enter to confirm).
-   - For each selected camera that is not yet calibrated:
-     - Point the camera at the chessboard and press **c** to capture calibration frames while moving the board (different angles and distances). Press **d** when done (at least 15 frames with the board detected).
-   - Optionally compute **extrinsics** (camera positions in a common world frame): place the chessboard so at least two cameras see it, then press **Space** to capture a snapshot. This is required for 3D triangulation.
+   - For each selected camera that is not yet calibrated: record a clip with **Space** (start/stop) while moving the chessboard; intrinsics are solved from the saved videos (see on-screen instructions).
    - The script saves calibrations to `Project/camera_calibrations.json` and the last-used camera selection to `Project/last_camera_setup.json`.
+
+3. **3D extrinsics** (only if you want triangulation with 2+ cameras): after every camera has intrinsics, run:
+   ```bash
+   python calibrate_extrinsics_3d.py
+   ```
+   or `python calibrate_extrinsics_3d.py --cameras 1,5`. Place the board so at least two cameras show “board OK”, then press **Space** to capture. Uses the same chessboard constants as `calibrate_cameras.py`.
 
 ### Normal use
 
@@ -46,14 +50,15 @@ The dashboard supports 1+ cameras. With two or more **calibrated** cameras (incl
 ### Recalibration
 
 - **Intrinsics** (lens/distortion): Re-run `calibrate_cameras.py` and calibrate the camera again; or delete that camera’s entry from `camera_calibrations.json` and run calibration for that camera.
-- **Extrinsics only** (cameras moved): Re-run the calibration script, skip re-doing intrinsics for cameras that are already calibrated, and run the extrinsics step again (chessboard visible in 2+ cameras, press Space). Save the setup as usual.
+- **Extrinsics only** (cameras moved): Run `calibrate_extrinsics_3d.py` again with the same rig (or `--cameras ...`); capture a new board snapshot with **Space**.
 
 ## Files
 
 - `camera_config.py` – Load/save calibrations and last setup; detect connected cameras; projection matrix helpers.
-- `calibrate_cameras.py` – Interactive calibration (intrinsics from chessboard video, optional extrinsics) and saving last-used cameras.
+- `calibrate_cameras.py` – Camera selection, intrinsics from recorded chessboard video, and saving last-used cameras.
+- `calibrate_extrinsics_3d.py` – Optional multi-camera extrinsics (chessboard snapshot) for 3D triangulation.
 - `triangulation.py` – Multi-view triangulation and 3D joint angle computation.
-- `camera_calibrations.json` – Stored per-camera intrinsics and optional extrinsics (created by the calibration script).
+- `camera_calibrations.json` – Stored per-camera intrinsics and optional extrinsics (written by the calibration scripts).
 - `last_camera_setup.json` – Last selected camera IDs and primary camera (written by the calibration script and by main after you confirm selection).
 
 ## Behaviour summary

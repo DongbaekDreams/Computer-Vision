@@ -15,6 +15,7 @@ from config import (
     PANEL_BG,
     PANEL_DIVIDER,
     PANEL_HEADER_BG,
+    SECTION_GAP,
     SECTION_TITLE_SCALE,
     STAT_LABEL_SCALE,
     STAT_VALUE_SCALE,
@@ -112,39 +113,120 @@ def draw_section_title(panel, x, y, w, title, expanded):
     return y + h
 
 
+def _fit_desc_text(text: str, font, scale: float, thick: int, max_w: int) -> str:
+    """Truncate description so putText stays within max_w pixels (OpenCV has no wrap)."""
+    if max_w < 24:
+        return ""
+    t = text.strip()
+    while True:
+        (tw, _), _ = cv2.getTextSize(t, font, scale, thick)
+        if tw <= max_w:
+            return t
+        if len(t) <= 4:
+            return "..."
+        t = t[:-2] + ".."
+
+
+def _draw_key_help_block(
+    panel,
+    x: int,
+    y: int,
+    w: int,
+    subtitle: str,
+    rows: list[tuple[str, str]],
+) -> int:
+    """One titled key list; returns y after the block."""
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    row_h = 19
+    head_h = 26
+    pad = CARD_PAD
+    box_h = head_h + len(rows) * row_h + 10
+    _draw_card(panel, x, y, w, box_h, fill=SURFACE_BG, border=SURFACE_BORDER)
+    cv2.putText(
+        panel,
+        subtitle,
+        (x + pad, y + 20),
+        font,
+        SECTION_TITLE_SCALE * 0.82,
+        TEXT_PRIMARY,
+        1,
+        cv2.LINE_AA,
+    )
+    thick = 1
+    desc_scale = 0.40
+    key_col_w = 56
+    desc_x0 = x + pad + key_col_w
+    max_desc_w = max(40, w - key_col_w - 2 * pad)
+    yy = y + head_h + 14
+    for k, d in rows:
+        cv2.putText(panel, k, (x + pad, yy), font, CONTROL_KEY_SCALE, TEXT_PRIMARY, 2, cv2.LINE_AA)
+        desc = _fit_desc_text(d, font, desc_scale, thick, max_desc_w)
+        cv2.putText(
+            panel,
+            desc,
+            (desc_x0, yy),
+            font,
+            desc_scale,
+            TEXT_SECONDARY,
+            thick,
+            cv2.LINE_AA,
+        )
+        yy += row_h
+    return y + box_h
+
+
 def draw_controls_section(panel, x, y, w, expanded):
     y = draw_section_title(panel, x, y, w, "Controls", expanded)
     if not expanded:
-        cv2.putText(panel, "? to expand", (x + CARD_PAD, y + 22), cv2.FONT_HERSHEY_SIMPLEX, UI_SCALE_SMALL, TEXT_MUTED, 1, cv2.LINE_AA)
+        cv2.putText(
+            panel,
+            "? toggle expanded key help (not a camera key)",
+            (x + CARD_PAD, y + 22),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            UI_SCALE_SMALL,
+            TEXT_MUTED,
+            1,
+            cv2.LINE_AA,
+        )
         return y + 36
-    rows = [
-        ("q", "quit"),
-        ("v", "toggle camera bg"),
-        ("u", "toggle panel"),
-        ("s", "toggle skeleton"),
-        ("a", "toggle polar+clip"),
-        ("g", "open palette gallery"),
-        ("esc", "close palette gallery"),
-        ("j", "toggle joints"),
-        ("p", "toggle vis text"),
-        ("l", "toggle console"),
-        ("?", "collapse this"),
-        ("mouse", "LIVE/REVIEW buttons"),
-        ("mouse", "REC captures up to 60s"),
-        ("mouse", "REVIEW: drag 10s window"),
-        ("mouse", "gallery: choose style"),
-    ]
-    box_h = 24 + len(rows) * CONTROL_ROW_H
-    _draw_card(panel, x, y, w, box_h, fill=SURFACE_BG, border=SURFACE_BORDER)
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    thick = 1
-    xk, xd = x + CARD_PAD, x + 96
-    yy = y + 24
-    for k, d in rows:
-        cv2.putText(panel, f"{k}", (xk, yy), font, CONTROL_KEY_SCALE, TEXT_PRIMARY, 2, cv2.LINE_AA)
-        cv2.putText(panel, f"{d}", (xd, yy), font, CONTROL_DESC_SCALE, TEXT_SECONDARY, thick, cv2.LINE_AA)
-        yy += CONTROL_ROW_H
-    return y + box_h + 10
+    # OpenCV putText: ASCII only (no Unicode).
+    y += 6
+    y = _draw_key_help_block(
+        panel,
+        x,
+        y,
+        w,
+        "Keys: display & overlay",
+        [
+            ("v", "toggle camera background"),
+            ("u", "toggle left panel"),
+            ("s", "toggle skeleton"),
+            ("a", "toggle polar plot + clip"),
+            ("g", "palette gallery"),
+            ("esc", "close gallery"),
+            ("j", "toggle joint dots"),
+            ("p", "toggle visibility text"),
+            ("l", "toggle console log"),
+            ("d", "2+ cams: dual view + 3D strip (toggle)"),
+        ],
+    )
+    y += SECTION_GAP
+    y = _draw_key_help_block(
+        panel,
+        x,
+        y,
+        w,
+        "Keys: session & rig",
+        [
+            ("q", "quit app"),
+            ("b", "camera baseline (meters)"),
+            ("m", "edit body profile"),
+            ("?", "collapse key help"),
+            ("mouse", "LIVE / REVIEW / REC"),
+            ("mouse", "review: drag 10s window"),
+        ],
+    )
+    return y + 8
 
 
 def fit_video_to_pane(frame, pane_w, pane_h):

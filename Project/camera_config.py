@@ -26,15 +26,14 @@ LAST_SETUP_PATH = _PROJECT_DIR / "last_camera_setup.json"
 
 @dataclass
 class CameraInfo:
-    """Detected camera: index (int) or URL source (str), plus optional label."""
-    index: int  # -1 for URL-based cameras
+    """Detected local camera: OpenCV index plus optional label."""
+    index: int
     label: str = ""
-    source: str = ""  # URL string for IP cameras; empty for index-based
 
 
-def is_url_source(camera_id: str) -> bool:
-    """True if camera_id is a URL rather than an integer index."""
-    return camera_id.startswith("http://") or camera_id.startswith("https://") or camera_id.startswith("rtsp://")
+def is_local_camera_id(camera_id: str) -> bool:
+    """True if camera_id is a non-negative integer index string (local / USB webcam)."""
+    return camera_id.isdigit()
 
 
 _INDEX_BACKENDS = []
@@ -44,37 +43,60 @@ for _b in ("CAP_DSHOW", "CAP_MSMF"):
 if not _INDEX_BACKENDS:
     _INDEX_BACKENDS.append(cv2.CAP_ANY)
 
+# HD calibration opens: on Windows MSMF often negotiates 720p+ better than DSHOW+YUY2 (~800x600).
+INTRINSICS_OPEN_BACKENDS: list[int] = []
+if sys.platform == "win32":
+    for _b in ("CAP_MSMF", "CAP_DSHOW"):
+        if hasattr(cv2, _b):
+            bv = getattr(cv2, _b)
+            if bv not in INTRINSICS_OPEN_BACKENDS:
+                INTRINSICS_OPEN_BACKENDS.append(bv)
+else:
+    INTRINSICS_OPEN_BACKENDS = list(_INDEX_BACKENDS)
+if not INTRINSICS_OPEN_BACKENDS:
+    INTRINSICS_OPEN_BACKENDS = list(_INDEX_BACKENDS)
 
-def open_camera(camera_id: str, width: int = 1280, height: int = 720) -> cv2.VideoCapture:
+
+def open_camera(
+    camera_id: str,
+    width: int = 1280,
+    height: int = 720,
+    *,
+    prefer_mjpeg: bool = True,
+    backends: list[int] | None = None,
+) -> cv2.VideoCapture:
     """
-    Open a VideoCapture for a camera_id that is either an integer index
-    (as a string like "0") or a URL ("http://...", "rtsp://...").
-    For URL cameras, minimizes internal buffering to reduce latency.
-    For index cameras, tries DSHOW first (more reliable for real hardware),
-    then falls back to MSMF.
+    Open a VideoCapture for a local camera index (string like "0").
+    Default backend order is DSHOW then MSMF; pass backends=INTRINSICS_OPEN_BACKENDS for HD calibration.
+
+    MJPEG is requested for most modes; resolution is set before and after FOURCC so drivers
+    do not stay stuck at ~800x600 YUY2.
     """
-    if is_url_source(camera_id):
-        cap = cv2.VideoCapture(camera_id, cv2.CAP_FFMPEG)
+    idx = int(camera_id)
+    order = backends if backends is not None else _INDEX_BACKENDS
+    cap = cv2.VideoCapture()
+    for backend in order:
+        cap = cv2.VideoCapture(idx, backend)
         if cap.isOpened():
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    else:
-        idx = int(camera_id)
-        cap = cv2.VideoCapture()
-        for backend in _INDEX_BACKENDS:
-            cap = cv2.VideoCapture(idx, backend)
-            if cap.isOpened():
-                break
-            cap.release()
+            break
+        cap.release()
     if cap.isOpened():
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        if prefer_mjpeg and max(width, height) >= 480:
+            cap.set(
+                cv2.CAP_PROP_FOURCC,
+                cv2.VideoWriter_fourcc(*"MJPG"),
+            )
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     return cap
 
 
 def drain_stale_frames(cap: cv2.VideoCapture, max_drain: int = 3) -> None:
     """
-    Grab (but don't decode) up to max_drain queued frames from an IP camera
-    to get closer to the live edge. Call before the "real" read().
+    Grab (but don't decode) up to max_drain queued frames to get closer to the live edge.
+    Call before the "real" read().
     """
     for _ in range(max_drain):
         cap.grab()
@@ -82,12 +104,19 @@ def drain_stale_frames(cap: cv2.VideoCapture, max_drain: int = 3) -> None:
 
 import threading
 
+# Serialize VideoCapture.read() across the process. Two threads calling read() on
+# different USB webcams at the same time often corrupts or starves one stream on Windows.
+_USB_READ_LOCK = threading.Lock()
+
 
 class ThreadedCapture:
     """
     Continuously reads frames from a VideoCapture in a background thread.
     The main thread can call latest() at any time to get the most recent
     frame without blocking. Keeps only the newest frame (no queue buildup).
+
+    USB webcams on the same controller often glitch if multiple devices read()
+    at once; a process-wide lock serializes capture.read() across instances.
     """
 
     def __init__(self, cap: cv2.VideoCapture):
@@ -101,7 +130,8 @@ class ThreadedCapture:
 
     def _reader(self):
         while self._running:
-            ok, frame = self.cap.read()
+            with _USB_READ_LOCK:
+                ok, frame = self.cap.read()
             if ok and frame is not None:
                 t = time.time()
                 with self._lock:
@@ -117,6 +147,82 @@ class ThreadedCapture:
         self._running = False
         self._thread.join(timeout=2.0)
         self.cap.release()
+
+
+class MultiCameraReader:
+    """
+    Dashboard multi-USB capture: **main thread** reads every device back-to-back
+    under the process USB lock.
+
+    A background reader can race the slow MediaPipe loop and leave one camera
+    stuck on bogus/black buffers while the other advances. Synchronous batch reads
+    tie each displayed frame to one USB pass. On Windows, 2+ cameras open with
+    MSMF-first backends (see INTRINSICS_OPEN_BACKENDS), which is usually more
+    reliable than DSHOW for multiple USB webcams.
+    """
+
+    def __init__(
+        self,
+        caps_by_id: dict[str, cv2.VideoCapture],
+        *,
+        read_order: list[str] | None = None,
+    ):
+        if not caps_by_id:
+            raise ValueError("MultiCameraReader needs at least one camera")
+        self._caps = caps_by_id
+        order = read_order if read_order is not None else list(caps_by_id.keys())
+        self._read_order = [cid for cid in order if cid in caps_by_id]
+        if len(self._read_order) != len(caps_by_id):
+            raise ValueError("read_order must list each camera id exactly once")
+
+    @classmethod
+    def from_camera_ids(
+        cls,
+        camera_ids: list[str],
+        width: int,
+        height: int,
+        *,
+        read_order: list[str] | None = None,
+    ) -> MultiCameraReader:
+        caps: dict[str, cv2.VideoCapture] = {}
+        multi = len(camera_ids) >= 2
+        backends = INTRINSICS_OPEN_BACKENDS if multi and sys.platform == "win32" else None
+        for cid in camera_ids:
+            cap = open_camera(cid, width, height, backends=backends)
+            if not cap.isOpened():
+                for c in caps.values():
+                    c.release()
+                raise RuntimeError(f"Camera index {cid} not available (failed to open).")
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            caps[cid] = cap
+        inst = cls(caps, read_order=read_order or list(camera_ids))
+        inst._warmup_reads()
+        return inst
+
+    def _warmup_reads(self) -> None:
+        """Drop startup placeholder frames (often black) before the dashboard loop."""
+        for _ in range(4):
+            self.read_batch(drain_first=True)
+
+    def read_batch(self, *, drain_first: bool = False) -> dict[str, np.ndarray]:
+        """
+        Read each camera once in read_order under the USB lock.
+        Returns fresh copies (safe to use for the rest of the frame tick).
+        """
+        out: dict[str, np.ndarray] = {}
+        with _USB_READ_LOCK:
+            for cid in self._read_order:
+                cap = self._caps[cid]
+                if drain_first:
+                    drain_stale_frames(cap, max_drain=3)
+                ok, fr = cap.read()
+                if ok and fr is not None:
+                    out[cid] = fr.copy()
+        return out
+
+    def release(self) -> None:
+        for cap in self._caps.values():
+            cap.release()
 
 
 @dataclass
@@ -206,6 +312,7 @@ class LastCameraSetup:
     primary_camera_id: str
     use_triangulation: bool = True
     camera_rotations: dict[str, int] = field(default_factory=dict)  # cam_id -> degrees (0/90/180/270)
+    camera_baseline_m: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -213,15 +320,35 @@ class LastCameraSetup:
             "primary_camera_id": self.primary_camera_id,
             "use_triangulation": self.use_triangulation,
             "camera_rotations": dict(self.camera_rotations),
+            "camera_baseline_m": self.camera_baseline_m,
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> LastCameraSetup:
+        baseline_raw = d.get("camera_baseline_m")
+        baseline_m = None
+        if baseline_raw is not None:
+            try:
+                baseline_m = float(baseline_raw)
+            except (TypeError, ValueError):
+                baseline_m = None
+        raw_selected = [str(x) for x in d.get("selected_camera_ids", [])]
+        selected = [cid for cid in raw_selected if is_local_camera_id(cid)]
+        rot_raw = dict(d.get("camera_rotations", {}))
+        camera_rotations = {
+            str(k): int(v)
+            for k, v in rot_raw.items()
+            if is_local_camera_id(str(k))
+        }
+        primary = str(d.get("primary_camera_id", ""))
+        if not is_local_camera_id(primary) or primary not in selected:
+            primary = selected[0] if selected else ""
         return cls(
-            selected_camera_ids=list(d.get("selected_camera_ids", [])),
-            primary_camera_id=str(d.get("primary_camera_id", "")),
+            selected_camera_ids=selected,
+            primary_camera_id=primary,
             use_triangulation=bool(d.get("use_triangulation", True)),
-            camera_rotations=dict(d.get("camera_rotations", {})),
+            camera_rotations=camera_rotations,
+            camera_baseline_m=baseline_m,
         )
 
 
@@ -240,9 +367,41 @@ def apply_rotation(frame: np.ndarray, degrees: int) -> np.ndarray:
 # Detection
 # ---------------------------------------------------------------------------
 
+# Reject mostly-black "idle" frames from virtual webcams (e.g. DroidCam when the
+# phone app is not streaming). Those devices still open as DirectShow indices.
+_PLACEHOLDER_GRAY_CAP = 18
+_PLACEHOLDER_DARK_FRAC_ALMOST_ALL = 0.97
+_PLACEHOLDER_DARK_FRAC_MOSTLY = 0.88
+_PLACEHOLDER_GRAY_MEAN_MAX = 32
+
+
+def is_inactive_virtual_cam_frame(bgr: np.ndarray) -> bool:
+    """
+    True if the frame looks like an idle / splash screen (dominant near-black),
+    not a live scene. Used to skip DroidCam-style placeholders during detection.
+    """
+    if bgr is None or bgr.size == 0:
+        return True
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    g_mean = float(gray.mean())
+    dark_frac = float(np.mean(gray < _PLACEHOLDER_GRAY_CAP))
+    if dark_frac > _PLACEHOLDER_DARK_FRAC_ALMOST_ALL:
+        return True
+    if dark_frac > _PLACEHOLDER_DARK_FRAC_MOSTLY and g_mean < _PLACEHOLDER_GRAY_MEAN_MAX:
+        return True
+    return False
+
 
 _PROBE_CODE = r"""
-import cv2, json, sys, time
+import cv2, json, sys, numpy as np
+T, DF0, DF1, GM = 18, 0.97, 0.88, 32
+def _dead(bgr):
+    if bgr is None or bgr.size == 0:
+        return True
+    g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    gm = float(g.mean())
+    df = float(np.mean(g < T))
+    return df > DF0 or (df > DF1 and gm < GM)
 idx = int(sys.argv[1])
 backends = []
 for b in ('CAP_DSHOW', 'CAP_MSMF'):
@@ -276,6 +435,8 @@ for bname, be in backends:
         r_ch, g_ch, b_ch = f[:,:,2].mean(), f[:,:,1].mean(), f[:,:,0].mean()
         if g_ch > 50 and r_ch < 5 and b_ch < 5:
             continue
+    if ok and f is not None and _dead(f):
+        continue
     print(json.dumps({"i": idx, "w": w, "h": h, "be": bname, "avg": avg}))
     sys.exit(0)
 sys.exit(1)
@@ -285,7 +446,7 @@ sys.exit(1)
 def _probe_single_index(index: int, timeout: float = 8.0) -> CameraInfo | None:
     """
     Probe a single camera index in a subprocess to avoid hanging the caller.
-    Rejects devices that only produce black or green frames.
+    Rejects black/green-only frames and mostly-black virtual-cam splash screens.
     """
     try:
         r = subprocess.run(
@@ -304,11 +465,12 @@ def _probe_single_index(index: int, timeout: float = 8.0) -> CameraInfo | None:
     return None
 
 
-def detect_connected_cameras(max_index: int = 5) -> list[CameraInfo]:
+def detect_connected_cameras(max_index: int = 10) -> list[CameraInfo]:
     """
     Probe OpenCV indices 0..max_index-1 in isolated subprocesses.
     Each index gets a timeout so a hung device can't block detection.
-    Rejects devices that produce only black or green frames.
+    Rejects devices that produce only black or green frames, or mostly-black
+    virtual-cam splash screens (e.g. DroidCam when not streaming).
     """
     result: list[CameraInfo] = []
     for i in range(max_index):
@@ -391,3 +553,22 @@ def get_projection_matrix(cal: Calibration) -> np.ndarray:
     t = t.reshape(3, 1) if t.ndim == 1 else t
     Rt = np.hstack([R, t])
     return (K @ Rt).astype(np.float64)
+
+
+def get_camera_center_world(cal: Calibration) -> np.ndarray | None:
+    """Return the camera center in world coordinates, or None if unavailable."""
+    if cal.extrinsics is None:
+        return None
+    R = np.array(cal.extrinsics.R, dtype=np.float64)
+    t = np.array(cal.extrinsics.t, dtype=np.float64).reshape(3, 1)
+    center = -R.T @ t
+    return center[:, 0]
+
+
+def get_camera_baseline_world(cal_a: Calibration, cal_b: Calibration) -> float | None:
+    """Return the distance between two camera centers in calibration world units."""
+    c_a = get_camera_center_world(cal_a)
+    c_b = get_camera_center_world(cal_b)
+    if c_a is None or c_b is None:
+        return None
+    return float(np.linalg.norm(c_a - c_b))

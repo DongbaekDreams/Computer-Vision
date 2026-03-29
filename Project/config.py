@@ -17,7 +17,7 @@ WINDOW = "MediaPipe Pose (Tasks) - Dashboard (q to quit)"
 
 # Dashboard layout
 PANEL_W = 500
-VIEW_H = 900
+VIEW_H = 1020
 VIEW_W = 1600
 VIDEO_PAD = 14
 
@@ -95,6 +95,11 @@ SHOW_CONSOLE = True
 
 # Visibility threshold for drawing
 VIS_MIN = 0.30
+
+# Triangulated 3D preview (pose_3d_view): points live in chessboard / extrinsics world
+# coordinates. Tweak if the skeleton looks rotated (e.g. facing sideways vs cameras).
+POSE_3D_WORLD_Z_ROT_DEG = 90.0  # spin about board normal (+Z in OpenCV object frame); try -90 if wrong
+POSE_3D_WORLD_Y_ROT_DEG = 0.0  # optional extra yaw about +Y
 
 # Tasks model asset (.task) - resolved relative to package
 TASK_PATH = str(MODELS_DIR / "pose_landmarker.task")
