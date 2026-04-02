@@ -24,6 +24,8 @@ from config import (
     TL_TEXT,
     TL_TEXT_DIM,
     TL_TICK,
+    TIMELINE_BTN_SCALE,
+    TIMELINE_BTN_THICK,
     UI_FONT,
     UI_SCALE_SMALL,
     WIN_BORDER,
@@ -120,12 +122,28 @@ pinned_start_t = 0.0
 
 def draw_mode_toggle(img, x, y, h, is_live_mode):
     global live_btn_rect, review_btn_rect
-    w_each = 72
+    w_each = 86
     gap = 8
     live_btn_rect = (x, y, x + w_each, y + h)
     review_btn_rect = (x + w_each + gap, y, x + 2 * w_each + gap, y + h)
-    draw_button(img, live_btn_rect, "LIVE", BTN_BLUE if is_live_mode else BTN_BG, BTN_TEXT, scale=UI_SCALE_SMALL, thick=1)
-    draw_button(img, review_btn_rect, "REVIEW", BTN_BLUE if (not is_live_mode) else BTN_BG, BTN_TEXT, scale=UI_SCALE_SMALL, thick=1)
+    draw_button(
+        img,
+        live_btn_rect,
+        "LIVE",
+        BTN_BLUE if is_live_mode else BTN_BG,
+        BTN_TEXT,
+        scale=TIMELINE_BTN_SCALE,
+        thick=TIMELINE_BTN_THICK,
+    )
+    draw_button(
+        img,
+        review_btn_rect,
+        "REVIEW",
+        BTN_BLUE if (not is_live_mode) else BTN_BG,
+        BTN_TEXT,
+        scale=TIMELINE_BTN_SCALE,
+        thick=TIMELINE_BTN_THICK,
+    )
     return review_btn_rect[2]
 
 
@@ -150,7 +168,7 @@ def draw_timeline_ui(img, x0, y0, w, h,
 
     right_of_toggle = draw_mode_toggle(img, x0 + pad, btn_row_y0, btn_row_h, is_live_mode)
 
-    btn_w = 72
+    btn_w = 82
     gap = 8
     xR = x0 + w - pad
 
@@ -176,9 +194,33 @@ def draw_timeline_ui(img, x0, y0, w, h,
     can_clear = (not is_recording) and (duration_s > 0.0)
     clr_text_col = BTN_TEXT if can_clear else BTN_DIM
 
-    draw_button(img, rec_btn_rect, rec_label, rec_fill, BTN_TEXT, scale=UI_SCALE_SMALL)
-    draw_button(img, play_btn_rect, play_label, play_fill, play_text_col, scale=UI_SCALE_SMALL)
-    draw_button(img, clear_btn_rect, "CLEAR", BTN_BG, clr_text_col, scale=UI_SCALE_SMALL)
+    draw_button(
+        img,
+        rec_btn_rect,
+        rec_label,
+        rec_fill,
+        BTN_TEXT,
+        scale=TIMELINE_BTN_SCALE,
+        thick=TIMELINE_BTN_THICK,
+    )
+    draw_button(
+        img,
+        play_btn_rect,
+        play_label,
+        play_fill,
+        play_text_col,
+        scale=TIMELINE_BTN_SCALE,
+        thick=TIMELINE_BTN_THICK,
+    )
+    draw_button(
+        img,
+        clear_btn_rect,
+        "CLEAR",
+        BTN_BG,
+        clr_text_col,
+        scale=TIMELINE_BTN_SCALE,
+        thick=TIMELINE_BTN_THICK,
+    )
 
     status_left = right_of_toggle + 12
     status_right = rec_btn_rect[0] - 10

@@ -1,19 +1,29 @@
 """Pose dashboard: MediaPipe pose estimation with angle tracking and recording."""
 
 import ctypes
+import os
+import subprocess
 import sys
 import time
+from pathlib import Path
 
 #
 import cv2
 import numpy as np
-from body_profile import BodyProfile, load_body_profile, resolve_body_profile, save_body_profile
+from body_profile import (
+    BodyProfile,
+    ResolvedBodyProfile,
+    load_body_profile,
+    resolve_body_profile,
+    save_body_profile,
+)
 from config import (
     ACCENT,
+    ACCENT_ALT,
+    ACCENT_SUCCESS,
     APP_PAD,
     CAM_H,
     CAM_W,
-    VIDEO_BG,
     CARD_GAP,
     CLIP_H_FRAC,
     DEFAULT_POLAR_PALETTE_KEY,
@@ -35,6 +45,9 @@ from config import (
     PALETTE_GALLERY_TEXT_MUTED,
     PALETTE_GALLERY_TITLE,
     PANEL_DIVIDER,
+    PANEL_FONT,
+    PANEL_TEXT_THICK,
+    PANEL_TITLE_THICK,
     PANEL_W,
     PLOT_PAD,
     PLOT_W,
@@ -47,6 +60,7 @@ from config import (
     SHOW_VIS,
     TASK_PATH,
     TASK_URL,
+    TEXT_SECONDARY,
     TIMELINE_H,
     VIDEO_PAD,
     VIEW_H,
@@ -57,6 +71,7 @@ from config import (
     get_polar_palette,
 )
 from camera_config import (
+    CameraInfo,
     LastCameraSetup,
     MultiCameraReader,
     apply_rotation,
@@ -83,6 +98,9 @@ from ui.drawing import (
     fit_video_to_pane,
     panel_bg,
 )
+from ui.export_gallery import draw_exports_gallery, list_polar_export_files
+from ui.export_viewer import draw_export_viewer_in_stage, export_viewer_step_index
+from ui.stage_modal import compute_video_stage_bounds, darken_full_image
 from ui.timeline import (
     clear_hitboxes,
     draw_timeline_ui,
@@ -91,8 +109,11 @@ from ui.timeline import (
     trim_time_buffer,
 )
 from visualization.clip_preview import draw_pose_clip
-from visualization.polar_plot import draw_palette_preview, draw_polar_plot_segment
-from visualization.pose_3d_view import draw_3d_pose_canvas
+from visualization.polar_plot import (
+    draw_palette_preview,
+    draw_polar_plot_segment,
+    export_polar_plot_png,
+)
 from visualization.skeleton import draw_skeleton_on_video
 
 # MediaPipe
@@ -118,6 +139,98 @@ def _short_label(cam_id: str) -> str:
     return f"Cam {cam_id}"
 
 
+def _open_file_default_app(path: Path) -> None:
+    p = str(path)
+    try:
+        if sys.platform == "win32":
+            os.startfile(p)
+        elif sys.platform == "darwin":
+            subprocess.run(["open", p], check=False)
+        else:
+            subprocess.run(["xdg-open", p], check=False)
+    except OSError:
+        pass
+
+
+def _sanitize_polar_export_basename(name: str) -> str:
+    """Strip path chars and Windows-forbidden symbols only; keep spaces and most punctuation."""
+    s = name.strip().strip('"')
+    s = s.replace("\\", "").replace("/", "")
+    for c in '<>:"|?*':
+        s = s.replace(c, "")
+    s = s.rstrip(" .")
+    return s
+
+
+def _polar_export_save_dialog(
+    exp_dir: Path, default_chart_title: str
+) -> tuple[Path, str] | None:
+    """
+    Ask for file name (saved under exp_dir). Returns (full_path, chart_title) or None if cancelled.
+    Blank name -> polar.png with default_chart_title on the figure.
+    """
+    import tkinter as tk
+    from tkinter import ttk
+
+    result: list[tuple[Path, str] | None] = [None]
+
+    root = tk.Tk()
+    root.withdraw()
+    top = tk.Toplevel(root)
+    top.title("Export polar plot")
+    top.attributes("-topmost", True)
+    top.resizable(False, False)
+
+    frm = ttk.Frame(top, padding=14)
+    frm.grid(row=0, column=0, sticky="nsew")
+
+    ttk.Label(
+        frm,
+        text="File name (saved in polar_exports/)",
+        font=("Segoe UI", 10, "bold"),
+    ).grid(row=0, column=0, columnspan=2, sticky="w")
+    ttk.Label(
+        frm,
+        text="Type the file name you want. .png is added only if you omit it.\n"
+        "Leave blank to save as polar.png with the automatic chart title.",
+        font=("Segoe UI", 9),
+        wraplength=420,
+        justify="left",
+    ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 8))
+
+    name_var = tk.StringVar(value="")
+    entry = ttk.Entry(frm, textvariable=name_var, width=44, font=("Segoe UI", 10))
+    entry.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+    entry.focus_set()
+
+    def on_ok() -> None:
+        base = _sanitize_polar_export_basename(name_var.get())
+        if not base:
+            result[0] = (exp_dir / "polar.png", default_chart_title)
+        else:
+            fname = base if base.lower().endswith(".png") else f"{base}.png"
+            chart = fname[:-4] if fname.lower().endswith(".png") else fname
+            result[0] = (exp_dir / fname, chart)
+        top.destroy()
+        root.destroy()
+
+    def on_cancel() -> None:
+        result[0] = None
+        top.destroy()
+        root.destroy()
+
+    btn_row = ttk.Frame(frm)
+    btn_row.grid(row=3, column=0, columnspan=2, sticky="e", pady=(4, 0))
+    ttk.Button(btn_row, text="Cancel", command=on_cancel).grid(row=0, column=0, padx=(0, 8))
+    ttk.Button(btn_row, text="Save", command=on_ok).grid(row=0, column=1)
+
+    top.protocol("WM_DELETE_WINDOW", on_cancel)
+    top.grab_set()
+    entry.bind("<Return>", lambda e: on_ok())
+    root.wait_window(top)
+    return result[0]
+
+
 def _merged_display_frames(
     fresh: dict[str, np.ndarray],
     cache: dict[str, np.ndarray],
@@ -140,6 +253,7 @@ def _annotate_cam_video(
     frame: np.ndarray,
     per_cam_results: list,
     *,
+    overlay_offsets_px: dict[str, int],
     show_camera_bg: bool,
     show_skeleton: bool,
     show_joints: bool,
@@ -153,6 +267,9 @@ def _annotate_cam_video(
             continue
         _, pts, vis, _, _, _, _, _ = r
         if pts is not None:
+            dx = int(overlay_offsets_px.get(cid, 0))
+            if dx != 0:
+                pts = {k: (np.asarray(v, dtype=np.float32) + np.array([dx, 0], dtype=np.float32)) for k, v in pts.items()}
             draw_skeleton_on_video(out, pts, vis, show_skeleton, show_joints, show_vis)
         break
     return out
@@ -167,6 +284,7 @@ def _compose_dual_cam_and_3d(
     pane_inner_w: int,
     pane_inner_h: int,
     *,
+    overlay_offsets_px: dict[str, int],
     show_camera_bg: bool,
     show_skeleton: bool,
     show_joints: bool,
@@ -175,9 +293,7 @@ def _compose_dual_cam_and_3d(
 ) -> np.ndarray:
     gap = 10
     c0, c1 = cam_order[0], cam_order[1]
-    cam_band_h = max(200, int((pane_inner_h - gap) * 0.55))
-    view3d_h = max(140, pane_inner_h - cam_band_h - gap)
-    half_w = max(120, (pane_inner_w - gap) // 2)
+    half_h = max(120, (pane_inner_h - gap) // 2)
 
     f0 = frames_by_id.get(c0)
     f1 = frames_by_id.get(c1)
@@ -190,6 +306,7 @@ def _compose_dual_cam_and_3d(
         c0,
         f0,
         per_cam_results,
+        overlay_offsets_px=overlay_offsets_px,
         show_camera_bg=show_camera_bg,
         show_skeleton=show_skeleton,
         show_joints=show_joints,
@@ -199,21 +316,22 @@ def _compose_dual_cam_and_3d(
         c1,
         f1,
         per_cam_results,
+        overlay_offsets_px=overlay_offsets_px,
         show_camera_bg=show_camera_bg,
         show_skeleton=show_skeleton,
         show_joints=show_joints,
         show_vis=show_vis,
     )
 
-    p0 = fit_video_to_pane(v0, half_w, cam_band_h)
-    p1 = fit_video_to_pane(v1, half_w, cam_band_h)
+    p0 = fit_video_to_pane(v0, pane_inner_w, half_h)
+    p1 = fit_video_to_pane(v1, pane_inner_w, half_h)
     cv2.putText(
         p0,
         f"Cam {c0}  (primary)",
         (8, 24),
-        cv2.FONT_HERSHEY_SIMPLEX,
+        PANEL_FONT,
         0.55,
-        (120, 220, 170),
+        ACCENT_SUCCESS,
         2,
         cv2.LINE_AA,
     )
@@ -221,39 +339,14 @@ def _compose_dual_cam_and_3d(
         p1,
         f"Cam {c1}",
         (8, 24),
-        cv2.FONT_HERSHEY_SIMPLEX,
+        PANEL_FONT,
         0.55,
-        (200, 200, 245),
+        ACCENT_ALT,
         2,
         cv2.LINE_AA,
     )
-
-    sep = np.full((cam_band_h, gap, 3), 24, dtype=np.uint8)
-    top = np.hstack((p0, sep, p1))
-
-    canvas3d = np.zeros((view3d_h, pane_inner_w, 3), dtype=np.uint8)
-    if use_triangulation:
-        draw_3d_pose_canvas(
-            canvas3d,
-            pts_3d_live,
-            vis_3d_live,
-            title="3D skeleton (triangulated)",
-        )
-    else:
-        canvas3d[:] = VIDEO_BG
-        cv2.putText(
-            canvas3d,
-            "3D: run calibrate_extrinsics_3d.py (chessboard, 2+ cameras)",
-            (12, view3d_h // 2 - 6),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.48,
-            (150, 155, 185),
-            1,
-            cv2.LINE_AA,
-        )
-
-    vsep = np.full((gap, pane_inner_w, 3), 24, dtype=np.uint8)
-    return np.vstack((top, vsep, canvas3d))
+    hsep = np.full((gap, pane_inner_w, 3), 24, dtype=np.uint8)
+    return np.vstack((p0, hsep, p1))
 
 
 def _run_camera_confirmation_ui(calibrations, last_setup):
@@ -295,9 +388,9 @@ def _run_camera_confirmation_ui(calibrations, last_setup):
             prim = " [PRIMARY]" if cid == primary else ""
             label = _short_label(cid)
             cv2.putText(disp, f"{label} {sel}{prim}",
-                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
+                        (10, 30), PANEL_FONT, 0.65, (0, 255, 0), 2)
             cv2.putText(disp, "0-9=toggle | P=primary | Enter=done",
-                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+                        (10, 60), PANEL_FONT, 0.45, (200, 200, 200), 1)
             cv2.imshow(f"Cam: {label}", disp)
         key = cv2.waitKey(1) & 0xFF
         if key == 13 or key == 10:
@@ -379,95 +472,167 @@ def _ask_optional_float_dialog(
             root.destroy()
 
 
-def _edit_body_profile_dialog(profile: BodyProfile) -> BodyProfile | None:
-    """Edit saved body measurements with lightweight dialogs."""
-    updated = BodyProfile(height_m=profile.height_m, segments_m=dict(profile.segments_m))
-    prompts = [
-        ("height_m", "Height (m)"),
+def _edit_body_profile_form_dialog(resolved: ResolvedBodyProfile) -> BodyProfile | None:
+    """Single modal with all segments; defaults match the resolved values shown on the dashboard."""
+    import tkinter as tk
+    from tkinter import messagebox, ttk
+
+    segment_keys = [
         ("shoulder_width", "Shoulder width (m)"),
         ("hip_width", "Hip width (m)"),
         ("torso", "Torso length (m)"),
-        ("upper_arm", "Upper arm length (m)"),
-        ("forearm", "Forearm length (m)"),
-        ("thigh", "Thigh length (m)"),
-        ("shank", "Shank length (m)"),
+        ("upper_arm", "Upper arm (m)"),
+        ("forearm", "Forearm (m)"),
+        ("thigh", "Thigh (m)"),
+        ("shank", "Shank (m)"),
     ]
-    for key, label in prompts:
-        current = updated.height_m if key == "height_m" else updated.segments_m.get(key)
-        cancelled, value = _ask_optional_float_dialog(
-            "Body profile",
-            f"{label}\n\nLeave blank to clear this field.",
-            current,
+
+    root = tk.Tk()
+    root.withdraw()
+    top = tk.Toplevel(root)
+    top.title("Body profile")
+    top.attributes("-topmost", True)
+    top.resizable(False, False)
+
+    frm = ttk.Frame(top, padding=14)
+    frm.grid(row=0, column=0, sticky="nsew")
+
+    ttk.Label(
+        frm,
+        text="Edit saved measurements (meters)",
+        font=("Segoe UI", 10, "bold"),
+    ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+    ttk.Label(
+        frm,
+        text="Values match what the dashboard is using now. Empty field clears that measurement.",
+        font=("Segoe UI", 9),
+        wraplength=400,
+        justify="left",
+    ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
+
+    entries: dict[str, tk.Entry] = {}
+    row = 2
+
+    ttk.Label(frm, text="Height (m)", width=22, anchor="w").grid(
+        row=row, column=0, sticky="w", pady=2
+    )
+    e_h = ttk.Entry(frm, width=16, font=("Segoe UI", 10))
+    e_h.grid(row=row, column=1, sticky="e", pady=2)
+    e_h.insert(0, f"{float(resolved.height_m):.3f}")
+    entries["height_m"] = e_h
+    row += 1
+
+    for key, label in segment_keys:
+        ttk.Label(frm, text=label, width=22, anchor="w").grid(
+            row=row, column=0, sticky="w", pady=2
         )
-        if cancelled:
+        e = ttk.Entry(frm, width=16, font=("Segoe UI", 10))
+        e.grid(row=row, column=1, sticky="e", pady=2)
+        v = resolved.segments_m.get(key)
+        if v is not None and float(v) > 0.0:
+            e.insert(0, f"{float(v):.3f}")
+        entries[key] = e
+        row += 1
+
+    out: list[BodyProfile | None] = [None]
+
+    def parse_entry(widget: tk.Entry) -> float | None:
+        s = widget.get().strip()
+        if not s:
             return None
-        if key == "height_m":
-            updated.height_m = value
-        elif value is None:
-            updated.segments_m.pop(key, None)
-        else:
-            updated.segments_m[key] = value
-    return updated
+        return float(s)
+
+    def on_ok() -> None:
+        try:
+            hv = parse_entry(entries["height_m"])
+            if hv is not None and hv <= 0.0:
+                raise ValueError("height must be positive")
+            segs: dict[str, float] = {}
+            for key, _lab in segment_keys:
+                sv = parse_entry(entries[key])
+                if sv is None:
+                    continue
+                if sv <= 0.0:
+                    raise ValueError(f"{key} must be positive or empty")
+                segs[key] = sv
+            out[0] = BodyProfile(height_m=hv, segments_m=segs)
+        except ValueError as ex:
+            messagebox.showerror("Body profile", str(ex), parent=top)
+            return
+        top.destroy()
+        root.destroy()
+
+    def on_cancel() -> None:
+        out[0] = None
+        top.destroy()
+        root.destroy()
+
+    btn_row = ttk.Frame(frm)
+    btn_row.grid(row=row, column=0, columnspan=2, sticky="e", pady=(12, 0))
+    ttk.Button(btn_row, text="Cancel", command=on_cancel).grid(row=0, column=0, padx=(0, 8))
+    ttk.Button(btn_row, text="Save", command=on_ok).grid(row=0, column=1)
+
+    top.protocol("WM_DELETE_WINDOW", on_cancel)
+    top.grab_set()
+    root.wait_window(top)
+    return out[0]
 
 
 def _resolve_runtime_camera_setup(
     calibrations,
     last_setup,
     connected,
-) -> tuple[list[str] | None, str | None, bool, dict[str, int], float | None]:
+) -> tuple[list[str] | None, str | None, bool, dict[str, int], float | None, dict[str, int]]:
     """
-    Restore the saved multi-camera rig. Uses last_camera_setup order; does not
-    require each index to appear in detect_connected_cameras() (probe can miss
-    high indices or a slow second USB cam).
+    Restore runtime rig from last_camera_setup when available.
+
+    Camera indices can drift on Windows between runs (same hardware, different
+    numeric index). If a saved index is missing, auto-fill with currently
+    connected extras so the app starts with a live rig.
     """
     connected_ids = [str(c.index) for c in connected]
     selected_ids: list[str] = []
 
     if last_setup and last_setup.selected_camera_ids:
+        saved_ids: list[str] = []
         for cid in last_setup.selected_camera_ids:
             s = str(cid)
-            if not is_local_camera_id(s) or s not in calibrations:
+            if not is_local_camera_id(s):
                 continue
-            if s not in selected_ids:
-                selected_ids.append(s)
+            if s not in saved_ids:
+                saved_ids.append(s)
+
+        present = [cid for cid in saved_ids if cid in connected_ids]
+        missing = [cid for cid in saved_ids if cid not in connected_ids]
+        extras = [cid for cid in connected_ids if cid not in present]
+        selected_ids = list(present)
+        if missing and extras:
+            n = min(len(missing), len(extras))
+            replacements = extras[:n]
+            selected_ids.extend(replacements)
+            print(
+                "Camera index drift detected. "
+                f"Missing saved indices {missing}; substituted live indices {replacements}."
+            )
+        elif saved_ids and len(saved_ids) >= 2 and present and missing:
+            # Probe often returns only one USB webcam while the second is still absent from
+            # the index list. If we stop here, we silently drop the saved rig's other camera.
+            selected_ids = list(saved_ids)
+            print(
+                "Multi-camera rig from last_camera_setup.json: opening saved indices "
+                f"{saved_ids} (probe reported {sorted(connected_ids, key=int)}). "
+                "Second camera may appear after USB settles; if open fails, check cables/ports."
+            )
 
     if not selected_ids:
         for cid in connected_ids:
             if cid in calibrations and cid not in selected_ids:
                 selected_ids.append(cid)
+    if not selected_ids:
+        selected_ids = list(connected_ids)
 
     if not selected_ids:
         return None, None, False, {}, None
-
-    # If last_camera_setup was overwritten with a single camera but exactly two calibrated
-    # cameras have extrinsics (typical 0+2 rig), restore the pair from calibrations.
-    ext_cams = sorted(
-        [
-            str(k)
-            for k, c in calibrations.items()
-            if is_local_camera_id(str(k)) and c.extrinsics is not None
-        ],
-        key=int,
-    )
-    if len(selected_ids) == 1 and len(ext_cams) == 2 and selected_ids[0] in ext_cams:
-        selected_ids = ext_cams
-        print(
-            f"Recovered dual-camera rig from calibrations (extrinsics on both): {selected_ids}"
-        )
-
-    # Exactly two entries in camera_calibrations.json -> use both (fixes last_setup stuck on ["0"]
-    # when cam 2 has intrinsics but extrinsics were never saved on it).
-    cal_keys = sorted(
-        [str(k) for k in calibrations if is_local_camera_id(str(k))],
-        key=int,
-    )
-    if len(selected_ids) == 1 and len(cal_keys) == 2:
-        selected_ids = cal_keys
-        print(
-            f"Using both calibrated camera indices {selected_ids} "
-            f"(camera_calibrations.json has exactly two). "
-            "Update last_camera_setup.json if you need a different rig."
-        )
 
     primary = selected_ids[0]
     if last_setup and last_setup.primary_camera_id in selected_ids:
@@ -480,6 +645,13 @@ def _resolve_runtime_camera_setup(
             for cid in selected_ids
             if cid in last_setup.camera_rotations
         }
+    overlay_offsets_px = {}
+    if last_setup and getattr(last_setup, "camera_overlay_offsets_px", None):
+        overlay_offsets_px = {
+            cid: int(last_setup.camera_overlay_offsets_px.get(cid, 0))
+            for cid in selected_ids
+            if cid in last_setup.camera_overlay_offsets_px
+        }
 
     # 3D whenever two+ calibrated views include extrinsics (ignore saved use_triangulation=False).
     use_triangulation = len(selected_ids) >= 2 and all(
@@ -487,7 +659,7 @@ def _resolve_runtime_camera_setup(
         for cid in selected_ids
     )
     baseline_m = last_setup.camera_baseline_m if last_setup else None
-    return selected_ids, primary, use_triangulation, rotations, baseline_m
+    return selected_ids, primary, use_triangulation, rotations, baseline_m, overlay_offsets_px
 
 
 def _compute_metric_scale(
@@ -524,6 +696,7 @@ def _save_runtime_setup(
     use_triangulation: bool,
     camera_rotations: dict[str, int],
     baseline_m: float | None,
+    camera_overlay_offsets_px: dict[str, int],
 ) -> None:
     save_last_setup(
         LastCameraSetup(
@@ -532,6 +705,7 @@ def _save_runtime_setup(
             use_triangulation=use_triangulation,
             camera_rotations=camera_rotations,
             camera_baseline_m=baseline_m,
+            camera_overlay_offsets_px=camera_overlay_offsets_px,
         )
     )
 
@@ -541,11 +715,11 @@ def _point_in_rect(x, y, rect):
     return x0 <= x <= x1 and y0 <= y <= y1
 
 
-def _draw_palette_gallery(img, selected_palette_key):
-    base = img.copy()
-    scrim = np.zeros_like(img)
-    scrim[:] = PALETTE_GALLERY_SCRIM
-    cv2.addWeighted(scrim, 0.62, base, 0.38, 0.0, dst=img)
+def _draw_palette_gallery(img, selected_palette_key, stage_bounds):
+    sx0, sy0, sx1, sy1 = stage_bounds
+    sw = max(1, sx1 - sx0)
+    sh = max(1, sy1 - sy0)
+    darken_full_image(img, PALETTE_GALLERY_SCRIM, 0.56)
 
     n_items = len(POLAR_PALETTES)
     cols = min(PALETTE_GALLERY_COLS, max(1, n_items))
@@ -565,8 +739,8 @@ def _draw_palette_gallery(img, selected_palette_key):
         + foot_h
         + 2 * inner_pad
     )
-    modal_x0 = max(20, (img.shape[1] - modal_w) // 2)
-    modal_y0 = max(20, (img.shape[0] - modal_h) // 2)
+    modal_x0 = sx0 + max(12, (sw - modal_w) // 2)
+    modal_y0 = sy0 + max(12, (sh - modal_h) // 2)
     modal_x1 = modal_x0 + modal_w
     modal_y1 = modal_y0 + modal_h
 
@@ -580,17 +754,17 @@ def _draw_palette_gallery(img, selected_palette_key):
         img,
         PALETTE_GALLERY_TITLE,
         (modal_x0 + inner_pad, modal_y0 + 28),
-        cv2.FONT_HERSHEY_SIMPLEX,
+        PANEL_FONT,
         0.76,
         PALETTE_GALLERY_TEXT,
-        2,
+        PANEL_TITLE_THICK,
         cv2.LINE_AA,
     )
     cv2.putText(
         img,
         PALETTE_GALLERY_SUBTITLE,
         (modal_x0 + inner_pad, modal_y0 + 52),
-        cv2.FONT_HERSHEY_SIMPLEX,
+        PANEL_FONT,
         0.46,
         PALETTE_GALLERY_TEXT_MUTED,
         1,
@@ -600,7 +774,7 @@ def _draw_palette_gallery(img, selected_palette_key):
         img,
         "ESC or click outside to close",
         (modal_x1 - 220, modal_y0 + 28),
-        cv2.FONT_HERSHEY_SIMPLEX,
+        PANEL_FONT,
         0.38,
         PALETTE_GALLERY_TEXT_MUTED,
         1,
@@ -637,7 +811,7 @@ def _draw_palette_gallery(img, selected_palette_key):
             img,
             palette["label"],
             (x0 + 10, y0 + 92),
-            cv2.FONT_HERSHEY_SIMPLEX,
+            PANEL_FONT,
             0.52,
             PALETTE_GALLERY_TEXT,
             1,
@@ -648,7 +822,7 @@ def _draw_palette_gallery(img, selected_palette_key):
             img,
             descriptor,
             (x0 + 10, y0 + 108),
-            cv2.FONT_HERSHEY_SIMPLEX,
+            PANEL_FONT,
             0.38,
             PALETTE_GALLERY_TEXT_MUTED,
             1,
@@ -668,9 +842,9 @@ def main():
         base_options=base_options,
         running_mode=vision.RunningMode.VIDEO,
         num_poses=1,
-        min_pose_detection_confidence=0.5,
-        min_pose_presence_confidence=0.5,
-        min_tracking_confidence=0.5,
+        min_pose_detection_confidence=0.6,
+        min_pose_presence_confidence=0.6,
+        min_tracking_confidence=0.7,
         output_segmentation_masks=False,
     )
     landmarker = vision.PoseLandmarker.create_from_options(options)
@@ -682,19 +856,45 @@ def main():
     primary_camera_id = None
     use_triangulation = False
     camera_rotations: dict[str, int] = {}
+    camera_overlay_offsets_px: dict[str, int] = {}
     baseline_m = last_setup.camera_baseline_m if last_setup else None
 
-    connected = detect_connected_cameras()
+    max_probe_idx = 7
+    if last_setup and last_setup.selected_camera_ids:
+        try:
+            max_saved = max(int(cid) for cid in last_setup.selected_camera_ids if str(cid).isdigit())
+            max_probe_idx = max(max_probe_idx, max_saved + 5)
+            if len(last_setup.selected_camera_ids) >= 2:
+                max_probe_idx = max(max_probe_idx, 16)
+        except ValueError:
+            pass
+    connected = detect_connected_cameras(max_index=max_probe_idx, timeout=1.2)
+    if not connected and last_setup and last_setup.selected_camera_ids:
+        # Fast probe can miss slow-enumerating devices on Windows; fall back to saved rig IDs.
+        print(
+            "Camera probe returned no devices; falling back to saved camera indices from "
+            "last_camera_setup.json."
+        )
+        connected = [
+            CameraInfo(index=int(cid), label=f"Saved camera {cid}")
+            for cid in last_setup.selected_camera_ids
+            if str(cid).isdigit()
+        ]
     runtime_setup = _resolve_runtime_camera_setup(calibrations, last_setup, connected)
     if runtime_setup[0]:
-        active_camera_ids, primary_camera_id, use_triangulation, camera_rotations, baseline_m = (
+        active_camera_ids, primary_camera_id, use_triangulation, camera_rotations, baseline_m, camera_overlay_offsets_px = (
             runtime_setup
         )
     # Do not save last_camera_setup on every launch: that used to overwrite a multi-cam
     # rig with a single detected camera and drop indices like 2 from the JSON.
     if active_camera_ids is None:
-        active_camera_ids = [str(DEFAULT_CAM_INDEX)]
-        primary_camera_id = str(DEFAULT_CAM_INDEX)
+        connected_ids = [str(c.index) for c in connected if str(c.index).isdigit()]
+        if connected_ids:
+            active_camera_ids = [connected_ids[0]]
+            primary_camera_id = connected_ids[0]
+        else:
+            active_camera_ids = [str(DEFAULT_CAM_INDEX)]
+            primary_camera_id = str(DEFAULT_CAM_INDEX)
         use_triangulation = False
 
     if (
@@ -709,28 +909,132 @@ def main():
             "(run calibrate_extrinsics_3d.py after intrinsics)."
         )
 
+    def _runtime_calibration_aliases(
+        selected_ids: list[str],
+        saved_setup: LastCameraSetup | None,
+        base_calibrations,
+    ):
+        """
+        Build runtime calibration dict with index-drift aliasing.
+
+        Example: saved rig [1,5], live rig remapped to [1,4], calibrations exist for [1,5].
+        Alias 4 -> 5 at runtime so triangulation can continue without editing JSON.
+        """
+        out = dict(base_calibrations)
+        alias_map: dict[str, str] = {}
+        if not saved_setup or not saved_setup.selected_camera_ids:
+            return out, alias_map
+        saved = [str(cid) for cid in saved_setup.selected_camera_ids if str(cid).isdigit()]
+        missing_saved = [cid for cid in saved if cid not in selected_ids and cid in base_calibrations]
+        uncal_live = [cid for cid in selected_ids if cid not in out]
+
+        # Primary path: alias from saved rig entries that disappeared.
+        alias_sources = list(missing_saved)
+        # Fallback path: if saved rig no longer contains old index IDs (e.g. user already saved [1,4]),
+        # map any uncalibrated live IDs to remaining calibrated IDs not in the live rig.
+        if not alias_sources and uncal_live:
+            alias_sources = [
+                cid for cid in base_calibrations.keys()
+                if is_local_camera_id(str(cid)) and str(cid) not in selected_ids
+            ]
+
+        if alias_sources and len(alias_sources) == len(uncal_live):
+            for live_cid, saved_cid in zip(
+                sorted(uncal_live, key=int), sorted([str(x) for x in alias_sources], key=int)
+            ):
+                out[live_cid] = base_calibrations[saved_cid]
+                alias_map[live_cid] = saved_cid
+                print(f"Runtime calibration alias: camera {live_cid} -> saved calibration {saved_cid}")
+        return out, alias_map
+
+    runtime_calibrations, runtime_alias_map = _runtime_calibration_aliases(
+        active_camera_ids, last_setup, calibrations
+    )
+    use_triangulation = len(active_camera_ids) >= 2 and all(
+        runtime_calibrations.get(cid)
+        and getattr(runtime_calibrations.get(cid), "extrinsics", None)
+        for cid in active_camera_ids
+    )
+    if runtime_alias_map and use_triangulation:
+        print(
+            "Index drift alias active; using saved extrinsics for remapped camera indices "
+            "for this run."
+        )
+
     metric_scale, solved_baseline_m, baseline_pair = _compute_metric_scale(
         active_camera_ids,
         primary_camera_id,
-        calibrations,
+        runtime_calibrations,
         baseline_m,
     )
 
     usb_read_order = [primary_camera_id] + [
         c for c in active_camera_ids if c != primary_camera_id
     ]
-    multi_cap = MultiCameraReader.from_camera_ids(
-        list(active_camera_ids),
-        CAM_W,
-        CAM_H,
-        read_order=usb_read_order,
-    )
+    try:
+        multi_cap = MultiCameraReader.from_camera_ids(
+            list(active_camera_ids),
+            CAM_W,
+            CAM_H,
+            read_order=usb_read_order,
+        )
+    except RuntimeError as e:
+        # Fast probe may miss slow-enumerating devices. Retry once with a slower probe
+        # and re-resolve the runtime rig (including index-drift remap).
+        print(f"Fast startup open failed: {e}")
+        print("Retrying camera detection with slower probe...")
+        connected_slow = detect_connected_cameras(max_index=max_probe_idx, timeout=3.0)
+        runtime_setup2 = _resolve_runtime_camera_setup(calibrations, last_setup, connected_slow)
+        if not runtime_setup2[0]:
+            raise
+        active_camera_ids, primary_camera_id, use_triangulation, camera_rotations, baseline_m, camera_overlay_offsets_px = (
+            runtime_setup2
+        )
+        runtime_calibrations, runtime_alias_map = _runtime_calibration_aliases(
+            active_camera_ids, last_setup, calibrations
+        )
+        use_triangulation = len(active_camera_ids) >= 2 and all(
+            runtime_calibrations.get(cid)
+            and getattr(runtime_calibrations.get(cid), "extrinsics", None)
+            for cid in active_camera_ids
+        )
+        if runtime_alias_map and use_triangulation:
+            print(
+                "Index drift alias active; using saved extrinsics for remapped camera indices "
+                "for this run."
+            )
+        metric_scale, solved_baseline_m, baseline_pair = _compute_metric_scale(
+            active_camera_ids,
+            primary_camera_id,
+            runtime_calibrations,
+            baseline_m,
+        )
+        usb_read_order = [primary_camera_id] + [
+            c for c in active_camera_ids if c != primary_camera_id
+        ]
+        multi_cap = MultiCameraReader.from_camera_ids(
+            list(active_camera_ids),
+            CAM_W,
+            CAM_H,
+            read_order=usb_read_order,
+        )
     print(
         f"Starting dashboard: cameras {active_camera_ids} (primary {primary_camera_id}), "
         f"USB read order {usb_read_order}, triangulation={'on' if use_triangulation else 'off'}"
     )
+    print("Camera source uses saved rig with auto-remap for missing indices.")
+
+    # Runtime undistortion is disabled by default. With index drift aliasing, applying
+    # stale intrinsics to a remapped camera can shift overlays significantly.
+    undistort_maps: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+    try:
+        cv2.setWindowProperty(
+            WINDOW, cv2.WND_PROP_ASPECT_RATIO, cv2.WINDOW_KEEPRATIO
+        )
+    except cv2.error:
+        pass
     cv2.resizeWindow(WINDOW, VIEW_W, VIEW_H)
     timeline_mouse_cb = make_mouse_cb()
 
@@ -755,16 +1059,94 @@ def main():
     palette_gallery_open = False
     palette_modal_rect = None
     palette_hitboxes = []
+    exports_gallery_open = False
+    exports_scroll_row = 0
+    exports_gallery_max_row = 0
+    exports_hitboxes: list = []
+    exports_modal_rect = None
+    polar_exp_dir = Path(__file__).resolve().parent / "polar_exports"
     show_dual_cam_strip = len(active_camera_ids) >= 2
     display_frame_cache: dict[str, np.ndarray] = {}
-    last_infer_out: dict[str, tuple] = {}
+    export_viewer_ctx: dict = {
+        "open": False,
+        "paths": [],
+        "idx": 0,
+        "img_rect": None,
+    }
+
+    def _close_export_viewer() -> None:
+        export_viewer_ctx["open"] = False
+        export_viewer_ctx["paths"] = []
+        export_viewer_ctx["idx"] = 0
+        export_viewer_ctx["img_rect"] = None
 
     def mouse_cb(event, x, y, flags, param):
         nonlocal \
             palette_gallery_open, \
             selected_palette_key, \
             palette_modal_rect, \
-            palette_hitboxes
+            palette_hitboxes, \
+            exports_gallery_open, \
+            exports_scroll_row, \
+            exports_gallery_max_row
+
+        if export_viewer_ctx["open"]:
+            if event == cv2.EVENT_LBUTTONDOWN:
+                r = export_viewer_ctx.get("img_rect")
+                paths = export_viewer_ctx["paths"]
+                if (
+                    r is not None
+                    and paths
+                    and _point_in_rect(x, y, r)
+                ):
+                    x0, y0, x1, y1 = r
+                    w = max(1, x1 - x0)
+                    t = w // 3
+                    if x < x0 + t:
+                        export_viewer_ctx["idx"] = max(0, export_viewer_ctx["idx"] - 1)
+                    elif x > x1 - t:
+                        export_viewer_ctx["idx"] = min(
+                            len(paths) - 1, export_viewer_ctx["idx"] + 1
+                        )
+                return
+            if event in (cv2.EVENT_MOUSEMOVE, cv2.EVENT_LBUTTONUP):
+                return
+
+        if exports_gallery_open:
+            if event == cv2.EVENT_LBUTTONDOWN:
+                for x0, y0, x1, y1, pth in exports_hitboxes:
+                    if _point_in_rect(x, y, (x0, y0, x1, y1)):
+                        fresh = list_polar_export_files(polar_exp_dir)
+                        try:
+                            idx = fresh.index(pth)
+                        except ValueError:
+                            fresh = [pth]
+                            idx = 0
+                        export_viewer_ctx["paths"] = fresh
+                        export_viewer_ctx["idx"] = idx
+                        export_viewer_ctx["open"] = True
+                        export_viewer_ctx["img_rect"] = None
+                        exports_gallery_open = False
+                        return
+                if exports_modal_rect is None or (
+                    not _point_in_rect(x, y, exports_modal_rect)
+                ):
+                    exports_gallery_open = False
+                return
+            ev_wheel = getattr(cv2, "EVENT_MOUSEWHEEL", 10)
+            if event == ev_wheel:
+                delta = (flags >> 16) & 0xFFFF
+                if delta >= 32768:
+                    delta -= 65536
+                if delta > 0:
+                    exports_scroll_row = max(0, exports_scroll_row - 1)
+                elif delta < 0:
+                    exports_scroll_row = min(
+                        exports_gallery_max_row, exports_scroll_row + 1
+                    )
+                return
+            if event in (cv2.EVENT_MOUSEMOVE, cv2.EVENT_LBUTTONUP):
+                return
 
         if palette_gallery_open:
             if event == cv2.EVENT_LBUTTONDOWN:
@@ -794,6 +1176,9 @@ def main():
                 if cid not in raw_batch:
                     continue
                 frame = raw_batch[cid]
+                if cid in undistort_maps:
+                    m1, m2 = undistort_maps[cid]
+                    frame = cv2.remap(frame, m1, m2, interpolation=cv2.INTER_LINEAR)
                 rot = camera_rotations.get(cid, 0)
                 if rot:
                     frame = apply_rotation(frame, rot)
@@ -819,20 +1204,8 @@ def main():
             per_cam_results = []
             for cid in active_camera_ids:
                 if cid not in frames_by_id:
-                    if cid in last_infer_out and not use_triangulation:
-                        per_cam_results.append((cid, *last_infer_out[cid]))
                     continue
                 frame = frames_by_id[cid]
-                throttle_sec = (
-                    not use_triangulation
-                    and len(active_camera_ids) >= 2
-                    and cid != primary_camera_id
-                    and (frame_i % 3) != 0
-                    and cid in last_infer_out
-                )
-                if throttle_sec:
-                    per_cam_results.append((cid, *last_infer_out[cid]))
-                    continue
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
                 mp_pose_ts += 1
@@ -844,7 +1217,6 @@ def main():
                 )
                 h, w = frame.shape[:2]
                 out = process_pose(lm, h, w)
-                last_infer_out[cid] = out
                 per_cam_results.append((cid, *out))
             infer_ms = (time.time() - t_inf0) * 1000.0
 
@@ -872,13 +1244,16 @@ def main():
             if use_triangulation and len(per_cam_results) >= 2 and frames_ready_for_3d:
                 vals, pts_3d_live, vis_3d_live = process_multi_cam_poses(
                     per_cam_results,
-                    calibrations,
+                    runtime_calibrations,
                     metric_scale=metric_scale,
                 )
                 for r in per_cam_results:
                     if r[0] == primary_camera_id:
                         _, pts, vis, _, _, _, pts_norm_snapshot, vis_snapshot = r
                         if pts is not None:
+                            dx = int(camera_overlay_offsets_px.get(primary_camera_id, 0))
+                            if dx != 0:
+                                pts = {k: (np.asarray(v, dtype=np.float32) + np.array([dx, 0], dtype=np.float32)) for k, v in pts.items()}
                             draw_skeleton_on_video(
                                 video, pts, vis, show_skeleton, show_joints, show_vis
                             )
@@ -888,6 +1263,9 @@ def main():
                     if r[0] == primary_camera_id:
                         _, pts, vis, _, _, vals, pts_norm_snapshot, vis_snapshot = r
                         if pts is not None:
+                            dx = int(camera_overlay_offsets_px.get(primary_camera_id, 0))
+                            if dx != 0:
+                                pts = {k: (np.asarray(v, dtype=np.float32) + np.array([dx, 0], dtype=np.float32)) for k, v in pts.items()}
                             draw_skeleton_on_video(
                                 video, pts, vis, show_skeleton, show_joints, show_vis
                             )
@@ -1046,7 +1424,7 @@ def main():
                     APP_PAD,
                     y,
                     PANEL_W - 2 * APP_PAD,
-                    48,
+                    44,
                     "Angles",
                     rows=[
                         ("Hip", L_hip_i, R_hip_i),
@@ -1062,7 +1440,7 @@ def main():
                     panel,
                     f"Polar style: {palette_label}",
                     (APP_PAD, y - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX,
+                    PANEL_FONT,
                     0.47,
                     ACCENT,
                     1,
@@ -1079,9 +1457,9 @@ def main():
                     panel,
                     rig_line,
                     (APP_PAD, y + 18),
-                    cv2.FONT_HERSHEY_SIMPLEX,
+                    PANEL_FONT,
                     0.46,
-                    (177, 188, 204),
+                    TEXT_SECONDARY,
                     1,
                     cv2.LINE_AA,
                 )
@@ -1096,13 +1474,13 @@ def main():
                     panel,
                     body_line,
                     (APP_PAD, y + 18),
-                    cv2.FONT_HERSHEY_SIMPLEX,
+                    PANEL_FONT,
                     0.46,
-                    (177, 188, 204),
+                    TEXT_SECONDARY,
                     1,
                     cv2.LINE_AA,
                 )
-                y += 30
+                y += 26
 
                 y = draw_controls_section(
                     panel, APP_PAD, y, PANEL_W - 2 * APP_PAD, controls_expanded
@@ -1135,6 +1513,7 @@ def main():
                         vis_3d_live,
                         pane_inner_w,
                         pane_inner_h,
+                        overlay_offsets_px=camera_overlay_offsets_px,
                         show_camera_bg=show_camera_bg,
                         show_skeleton=show_skeleton,
                         show_joints=show_joints,
@@ -1241,6 +1620,7 @@ def main():
                         vis_3d_live,
                         pane_inner_w,
                         pane_inner_h,
+                        overlay_offsets_px=camera_overlay_offsets_px,
                         show_camera_bg=show_camera_bg,
                         show_skeleton=show_skeleton,
                         show_joints=show_joints,
@@ -1254,6 +1634,16 @@ def main():
                     VIDEO_PAD : VIDEO_PAD + video_pane.shape[0],
                     x_off : x_off + video_pane.shape[1],
                 ] = video_pane
+
+            stage_bounds = compute_video_stage_bounds(
+                VIEW_W,
+                VIEW_H,
+                panel_w_eff=panel_w_eff,
+                plot_enabled=plot_enabled,
+                plot_w=PLOT_W,
+                plot_pad=PLOT_PAD,
+                video_pad=VIDEO_PAD,
+            )
 
             if show_console and (time.time() - last_log) >= LOG_INTERVAL:
                 line = console_line(
@@ -1271,64 +1661,182 @@ def main():
                     L_elb_i,
                     R_elb_i,
                 )
+                age_bits = []
+                for cid in active_camera_ids:
+                    age = multi_cap.get_frame_age_ms(cid)
+                    if age is not None:
+                        age_bits.append(f"cam{cid}:{age:4.0f}ms")
+                if age_bits:
+                    line += " | " + " ".join(age_bits)
                 sys.stdout.write("\r" + line + " " * 10)
                 sys.stdout.flush()
                 last_log = time.time()
 
-            if palette_gallery_open and plot_enabled:
+            export_viewer_ctx["img_rect"] = None
+            if exports_gallery_open:
+                export_paths = list_polar_export_files(polar_exp_dir)
+                exports_modal_rect, exports_hitboxes, exports_gallery_max_row = (
+                    draw_exports_gallery(
+                        dash,
+                        stage_bounds=stage_bounds,
+                        export_paths=export_paths,
+                        scroll_row=exports_scroll_row,
+                    )
+                )
+                exports_scroll_row = min(
+                    exports_scroll_row, exports_gallery_max_row
+                )
+                palette_modal_rect = None
+                palette_hitboxes = []
+            elif palette_gallery_open and plot_enabled:
+                exports_modal_rect = None
+                exports_hitboxes = []
                 palette_modal_rect, palette_hitboxes = _draw_palette_gallery(
-                    dash, selected_palette_key
+                    dash, selected_palette_key, stage_bounds
                 )
             else:
+                exports_modal_rect = None
+                exports_hitboxes = []
                 palette_modal_rect = None
                 palette_hitboxes = []
 
+            if export_viewer_ctx["open"] and export_viewer_ctx["paths"]:
+                paths_v = export_viewer_ctx["paths"]
+                export_viewer_ctx["idx"] = max(
+                    0, min(len(paths_v) - 1, export_viewer_ctx["idx"])
+                )
+                pv = paths_v[export_viewer_ctx["idx"]]
+                darken_full_image(dash, PALETTE_GALLERY_SCRIM, 0.56)
+                export_viewer_ctx["img_rect"] = draw_export_viewer_in_stage(
+                    dash,
+                    stage_bounds,
+                    pv,
+                    export_viewer_ctx["idx"],
+                    len(paths_v),
+                )
+
             cv2.imshow(WINDOW, dash)
 
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
-                break
-            elif key == 27:
-                palette_gallery_open = False
-            elif key in (ord("v"), ord("V")):
-                show_camera_bg = not show_camera_bg
-            elif key in (ord("u"), ord("U")):
-                show_panel = not show_panel
-            elif key in (ord("s"), ord("S")):
-                show_skeleton = not show_skeleton
-            elif key in (ord("j"), ord("J")):
-                show_joints = not show_joints
-            elif key in (ord("p"), ord("P")):
-                show_vis = not show_vis
-            elif key in (ord("l"), ord("L")):
-                show_console = not show_console
-                if not show_console:
-                    sys.stdout.write("\n")
-                    sys.stdout.flush()
-            elif key == ord("?"):
-                controls_expanded = not controls_expanded
-            elif key in (ord("d"), ord("D")):
-                if len(active_camera_ids) >= 2:
-                    show_dual_cam_strip = not show_dual_cam_strip
-            elif key in (ord("a"), ord("A")):
-                show_polar = not show_polar
-                if not show_polar:
+            key_ex = cv2.waitKeyEx(1)
+            key = key_ex & 0xFF
+
+            if export_viewer_ctx["open"] and export_viewer_ctx["paths"]:
+                step_v = export_viewer_step_index(key_ex)
+                if step_v is not None:
+                    export_viewer_ctx["idx"] = max(
+                        0,
+                        min(
+                            len(export_viewer_ctx["paths"]) - 1,
+                            export_viewer_ctx["idx"] + step_v,
+                        ),
+                    )
+                elif key == 27 or key == ord("q"):
+                    _close_export_viewer()
+
+            if not export_viewer_ctx["open"]:
+                if key == ord("q"):
+                    break
+                elif key == 27:
                     palette_gallery_open = False
-            elif key in (ord("g"), ord("G")) and show_polar:
-                palette_gallery_open = not palette_gallery_open
-            elif key in (ord("b"), ord("B")):
-                cancelled, new_baseline_m = _ask_optional_float_dialog(
-                    "Camera baseline",
-                    "Distance between the primary camera and secondary camera in meters.\n\nLeave blank to clear and use calibration scale.",
-                    baseline_m,
-                )
-                if not cancelled:
-                    baseline_m = new_baseline_m
-                    metric_scale, solved_baseline_m, baseline_pair = _compute_metric_scale(
-                        active_camera_ids,
-                        primary_camera_id,
-                        calibrations,
+                    exports_gallery_open = False
+                elif key in (ord("v"), ord("V")):
+                    show_camera_bg = not show_camera_bg
+                elif key in (ord("u"), ord("U")):
+                    show_panel = not show_panel
+                elif key in (ord("s"), ord("S")):
+                    show_skeleton = not show_skeleton
+                elif key in (ord("j"), ord("J")):
+                    show_joints = not show_joints
+                elif key in (ord("p"), ord("P")):
+                    show_vis = not show_vis
+                elif key in (ord("l"), ord("L")):
+                    show_console = not show_console
+                    if not show_console:
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+                elif key == ord("?"):
+                    controls_expanded = not controls_expanded
+                elif key in (ord("d"), ord("D")):
+                    if len(active_camera_ids) >= 2:
+                        show_dual_cam_strip = not show_dual_cam_strip
+                elif key in (ord("a"), ord("A")):
+                    show_polar = not show_polar
+                    if not show_polar:
+                        palette_gallery_open = False
+                elif key in (ord("g"), ord("G")) and show_polar:
+                    palette_gallery_open = not palette_gallery_open
+                    if palette_gallery_open:
+                        exports_gallery_open = False
+                elif key in (ord("e"), ord("E")):
+                    exports_gallery_open = not exports_gallery_open
+                    if exports_gallery_open:
+                        palette_gallery_open = False
+                        exports_scroll_row = 0
+                elif key in (ord("o"), ord("O")) and show_polar:
+                    if seg_series is None or not seg_series:
+                        print(
+                            "Polar export: no segment in the current window (need more samples)."
+                        )
+                    else:
+                        any_s = next(iter(seg_series.values()))
+                        if int(any_s.shape[0]) <= 2:
+                            print("Polar export: segment too short.")
+                        else:
+                            exp_dir = polar_exp_dir
+                            if timeline_module.live_mode:
+                                if seg_ts is not None and len(seg_ts) >= 2:
+                                    wl = f"live {float(seg_ts[0]):.2f}-{float(seg_ts[-1]):.2f}s"
+                                else:
+                                    wl = "live"
+                            else:
+                                ws = float(timeline_module.pinned_start_t)
+                                wl = f"review {ws:.2f}-{ws + SEG_SECONDS:.2f}s"
+                            default_title = (
+                                f"Angles (Polar)  ({wl})" if wl else "Angles (Polar)"
+                            )
+                            exp_dir.mkdir(parents=True, exist_ok=True)
+                            choice = _polar_export_save_dialog(exp_dir, default_title)
+                            if choice is None:
+                                print("Polar export cancelled.")
+                            else:
+                                out_png, chart_title = choice
+                                export_polar_plot_png(
+                                    seg_series,
+                                    selected_palette_key,
+                                    out_png,
+                                    title=chart_title,
+                                )
+                                print(f"Saved polar plot: {out_png}")
+                                _open_file_default_app(out_png)
+                elif key in (ord("b"), ord("B")):
+                    cancelled, new_baseline_m = _ask_optional_float_dialog(
+                        "Camera baseline",
+                        "Distance between the primary camera and secondary camera in meters.\n\nLeave blank to clear and use calibration scale.",
                         baseline_m,
+                    )
+                    if not cancelled:
+                        baseline_m = new_baseline_m
+                        metric_scale, solved_baseline_m, baseline_pair = _compute_metric_scale(
+                            active_camera_ids,
+                            primary_camera_id,
+                            runtime_calibrations,
+                            baseline_m,
+                        )
+                        _save_runtime_setup(
+                            active_camera_ids,
+                            primary_camera_id,
+                            use_triangulation,
+                            camera_rotations,
+                            baseline_m,
+                            camera_overlay_offsets_px,
+                        )
+                        if baseline_m is None:
+                            print("Cleared camera baseline override.")
+                        else:
+                            print(f"Saved camera baseline: {baseline_m:.3f} m")
+                elif key == ord("["):
+                    camera_overlay_offsets_px[primary_camera_id] = int(
+                        camera_overlay_offsets_px.get(primary_camera_id, 0) - 2
                     )
                     _save_runtime_setup(
                         active_camera_ids,
@@ -1336,17 +1844,68 @@ def main():
                         use_triangulation,
                         camera_rotations,
                         baseline_m,
+                        camera_overlay_offsets_px,
                     )
-                    if baseline_m is None:
-                        print("Cleared camera baseline override.")
-                    else:
-                        print(f"Saved camera baseline: {baseline_m:.3f} m")
-            elif key in (ord("m"), ord("M")):
-                updated_profile = _edit_body_profile_dialog(body_profile)
-                if updated_profile is not None:
-                    body_profile = updated_profile
-                    save_body_profile(body_profile)
-                    print("Saved body profile.")
+                    print(
+                        f"{_short_label(primary_camera_id)} overlay x offset: {camera_overlay_offsets_px[primary_camera_id]} px"
+                    )
+                elif key == ord("]"):
+                    camera_overlay_offsets_px[primary_camera_id] = int(
+                        camera_overlay_offsets_px.get(primary_camera_id, 0) + 2
+                    )
+                    _save_runtime_setup(
+                        active_camera_ids,
+                        primary_camera_id,
+                        use_triangulation,
+                        camera_rotations,
+                        baseline_m,
+                        camera_overlay_offsets_px,
+                    )
+                    print(
+                        f"{_short_label(primary_camera_id)} overlay x offset: {camera_overlay_offsets_px[primary_camera_id]} px"
+                    )
+                elif key == ord(";"):
+                    secondary_ids = [c for c in active_camera_ids if c != primary_camera_id]
+                    if secondary_ids:
+                        sid = secondary_ids[0]
+                        camera_overlay_offsets_px[sid] = int(
+                            camera_overlay_offsets_px.get(sid, 0) - 2
+                        )
+                        _save_runtime_setup(
+                            active_camera_ids,
+                            primary_camera_id,
+                            use_triangulation,
+                            camera_rotations,
+                            baseline_m,
+                            camera_overlay_offsets_px,
+                        )
+                        print(
+                            f"{_short_label(sid)} overlay x offset: {camera_overlay_offsets_px[sid]} px"
+                        )
+                elif key == ord("'"):
+                    secondary_ids = [c for c in active_camera_ids if c != primary_camera_id]
+                    if secondary_ids:
+                        sid = secondary_ids[0]
+                        camera_overlay_offsets_px[sid] = int(
+                            camera_overlay_offsets_px.get(sid, 0) + 2
+                        )
+                        _save_runtime_setup(
+                            active_camera_ids,
+                            primary_camera_id,
+                            use_triangulation,
+                            camera_rotations,
+                            baseline_m,
+                            camera_overlay_offsets_px,
+                        )
+                        print(
+                            f"{_short_label(sid)} overlay x offset: {camera_overlay_offsets_px[sid]} px"
+                        )
+                elif key in (ord("m"), ord("M")):
+                    updated_profile = _edit_body_profile_form_dialog(resolved_body)
+                    if updated_profile is not None:
+                        body_profile = updated_profile
+                        save_body_profile(body_profile)
+                        print("Saved body profile.")
 
     finally:
         multi_cap.release()

@@ -9,14 +9,19 @@ from config import (
     BTN_BORDER,
     BTN_TEXT,
     CARD_PAD,
-    CONTROL_DESC_SCALE,
+    CONTROL_KEY_FONT,
     CONTROL_KEY_SCALE,
-    CONTROL_ROW_H,
+    KEY_HELP_HEAD_H,
+    KEY_HELP_ROW_H,
+    PANEL_CONTROLS_SECTION_GAP,
     PANEL_BG,
     PANEL_DIVIDER,
     PANEL_HEADER_BG,
-    SECTION_GAP,
+    PANEL_FONT,
+    PANEL_TEXT_THICK,
+    PANEL_TITLE_THICK,
     SECTION_TITLE_SCALE,
+    SEG_SECONDS,
     STAT_LABEL_SCALE,
     STAT_VALUE_SCALE,
     SUBTITLE_SCALE,
@@ -72,44 +77,129 @@ def draw_panel_header(panel, title, subtitle=None):
     cv2.rectangle(panel, (0, 0), (w - 1, header_h), PANEL_HEADER_BG, -1)
     cv2.rectangle(panel, (0, header_h - 5), (w - 1, header_h), ACCENT, -1)
     cv2.line(panel, (0, header_h), (w - 1, header_h), PANEL_DIVIDER, 1)
-    cv2.putText(panel, title, (18, 40), cv2.FONT_HERSHEY_SIMPLEX, TITLE_SCALE, TEXT_PRIMARY, 2, cv2.LINE_AA)
+    cv2.putText(
+        panel,
+        title,
+        (18, 40),
+        PANEL_FONT,
+        TITLE_SCALE,
+        TEXT_PRIMARY,
+        PANEL_TITLE_THICK,
+        cv2.LINE_AA,
+    )
     if subtitle:
-        cv2.putText(panel, subtitle, (18, 62), cv2.FONT_HERSHEY_SIMPLEX, SUBTITLE_SCALE, TEXT_SECONDARY, 1, cv2.LINE_AA)
+        cv2.putText(
+            panel,
+            subtitle,
+            (18, 62),
+            PANEL_FONT,
+            SUBTITLE_SCALE,
+            TEXT_SECONDARY,
+            PANEL_TEXT_THICK,
+            cv2.LINE_AA,
+        )
     return header_h
 
 
 def draw_stat_box(panel, x, y, w, h, label, value):
     _draw_card(panel, x, y, w, h, fill=SURFACE_BG, border=SURFACE_BORDER, accent=ACCENT)
-    cv2.putText(panel, label.upper(), (x + CARD_PAD, y + 24), cv2.FONT_HERSHEY_SIMPLEX, STAT_LABEL_SCALE, TEXT_SECONDARY, 1, cv2.LINE_AA)
-    cv2.putText(panel, value, (x + CARD_PAD, y + 60), cv2.FONT_HERSHEY_SIMPLEX, STAT_VALUE_SCALE, TEXT_PRIMARY, 2, cv2.LINE_AA)
+    cv2.putText(
+        panel,
+        label.upper(),
+        (x + CARD_PAD, y + 24),
+        PANEL_FONT,
+        STAT_LABEL_SCALE,
+        TEXT_SECONDARY,
+        PANEL_TEXT_THICK,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        panel,
+        value,
+        (x + CARD_PAD, y + 60),
+        PANEL_FONT,
+        STAT_VALUE_SCALE,
+        TEXT_PRIMARY,
+        PANEL_TEXT_THICK,
+        cv2.LINE_AA,
+    )
 
 
 def draw_lr_table(panel, x, y, w, row_h, title, rows):
     hh = row_h * (len(rows) + 1) + 6
     _draw_card(panel, x, y, w, hh, fill=SURFACE_BG, border=SURFACE_BORDER)
-    cv2.putText(panel, title, (x + CARD_PAD, y + 28), cv2.FONT_HERSHEY_SIMPLEX, TABLE_TITLE_SCALE, TEXT_PRIMARY, 2, cv2.LINE_AA)
+    cv2.putText(
+        panel,
+        title,
+        (x + CARD_PAD, y + 28),
+        PANEL_FONT,
+        TABLE_TITLE_SCALE,
+        TEXT_PRIMARY,
+        PANEL_TEXT_THICK,
+        cv2.LINE_AA,
+    )
     header_y = y + row_h
     cv2.line(panel, (x + 1, header_y), (x + w - 1, header_y), SURFACE_BORDER, 1)
     col_label = x + CARD_PAD
     col_L = x + int(w * 0.62)
     col_R = x + int(w * 0.82)
-    cv2.putText(panel, "L", (col_L, y + row_h - 12), cv2.FONT_HERSHEY_SIMPLEX, TABLE_LABEL_SCALE, TEXT_SECONDARY, 1, cv2.LINE_AA)
-    cv2.putText(panel, "R", (col_R, y + row_h - 12), cv2.FONT_HERSHEY_SIMPLEX, TABLE_LABEL_SCALE, TEXT_SECONDARY, 1, cv2.LINE_AA)
+    cv2.putText(
+        panel,
+        "L",
+        (col_L, y + row_h - 12),
+        PANEL_FONT,
+        TABLE_LABEL_SCALE,
+        TEXT_SECONDARY,
+        PANEL_TEXT_THICK,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        panel,
+        "R",
+        (col_R, y + row_h - 12),
+        PANEL_FONT,
+        TABLE_LABEL_SCALE,
+        TEXT_SECONDARY,
+        PANEL_TEXT_THICK,
+        cv2.LINE_AA,
+    )
     for i, (lab, lv, rv) in enumerate(rows):
         yy = y + row_h * (i + 1) + 10
         if i > 0:
             cv2.line(panel, (x + CARD_PAD, yy - 6), (x + w - CARD_PAD, yy - 6), SURFACE_BG_ALT, 1)
-        cv2.putText(panel, lab, (col_label, yy + 18), cv2.FONT_HERSHEY_SIMPLEX, TABLE_LABEL_SCALE, TEXT_SECONDARY, 1, cv2.LINE_AA)
-        put_text_deg(panel, lv, (col_L, yy + 22), cv2.FONT_HERSHEY_SIMPLEX, TABLE_VALUE_SCALE, TEXT_PRIMARY, 2)
-        put_text_deg(panel, rv, (col_R, yy + 22), cv2.FONT_HERSHEY_SIMPLEX, TABLE_VALUE_SCALE, TEXT_PRIMARY, 2)
+        cv2.putText(
+            panel,
+            lab,
+            (col_label, yy + 18),
+            PANEL_FONT,
+            TABLE_LABEL_SCALE,
+            TEXT_SECONDARY,
+            PANEL_TEXT_THICK,
+            cv2.LINE_AA,
+        )
+        put_text_deg(
+            panel, lv, (col_L, yy + 22), PANEL_FONT, TABLE_VALUE_SCALE, TEXT_PRIMARY, PANEL_TEXT_THICK
+        )
+        put_text_deg(
+            panel, rv, (col_R, yy + 22), PANEL_FONT, TABLE_VALUE_SCALE, TEXT_PRIMARY, PANEL_TEXT_THICK
+        )
     return y + hh
 
 
 def draw_section_title(panel, x, y, w, title, expanded):
-    h = 42
+    h = 38
     _draw_card(panel, x, y, w, h, fill=SURFACE_BG_ALT, border=SURFACE_BORDER)
     tri = "v" if expanded else ">"
-    cv2.putText(panel, f"{tri} {title}", (x + CARD_PAD, y + 28), cv2.FONT_HERSHEY_SIMPLEX, SECTION_TITLE_SCALE, TEXT_PRIMARY, 2, cv2.LINE_AA)
+    cv2.putText(
+        panel,
+        f"{tri} {title}",
+        (x + CARD_PAD, y + 26),
+        PANEL_FONT,
+        SECTION_TITLE_SCALE,
+        TEXT_PRIMARY,
+        PANEL_TEXT_THICK,
+        cv2.LINE_AA,
+    )
     return y + h
 
 
@@ -136,30 +226,39 @@ def _draw_key_help_block(
     rows: list[tuple[str, str]],
 ) -> int:
     """One titled key list; returns y after the block."""
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    row_h = 19
-    head_h = 26
+    font = PANEL_FONT
+    row_h = KEY_HELP_ROW_H
+    head_h = KEY_HELP_HEAD_H
     pad = CARD_PAD
-    box_h = head_h + len(rows) * row_h + 10
+    box_h = head_h + len(rows) * row_h + 6
     _draw_card(panel, x, y, w, box_h, fill=SURFACE_BG, border=SURFACE_BORDER)
     cv2.putText(
         panel,
         subtitle,
-        (x + pad, y + 20),
+        (x + pad, y + 18),
         font,
-        SECTION_TITLE_SCALE * 0.82,
+        SECTION_TITLE_SCALE * 0.78,
         TEXT_PRIMARY,
-        1,
+        PANEL_TEXT_THICK,
         cv2.LINE_AA,
     )
-    thick = 1
-    desc_scale = 0.40
-    key_col_w = 56
+    thick = PANEL_TEXT_THICK
+    desc_scale = 0.42
+    key_col_w = 94
     desc_x0 = x + pad + key_col_w
     max_desc_w = max(40, w - key_col_w - 2 * pad)
-    yy = y + head_h + 14
+    yy = y + head_h + 12
     for k, d in rows:
-        cv2.putText(panel, k, (x + pad, yy), font, CONTROL_KEY_SCALE, TEXT_PRIMARY, 2, cv2.LINE_AA)
+        cv2.putText(
+            panel,
+            k,
+            (x + pad, yy),
+            CONTROL_KEY_FONT,
+            CONTROL_KEY_SCALE,
+            TEXT_PRIMARY,
+            PANEL_TEXT_THICK,
+            cv2.LINE_AA,
+        )
         desc = _fit_desc_text(d, font, desc_scale, thick, max_desc_w)
         cv2.putText(
             panel,
@@ -182,51 +281,89 @@ def draw_controls_section(panel, x, y, w, expanded):
             panel,
             "? toggle expanded key help (not a camera key)",
             (x + CARD_PAD, y + 22),
-            cv2.FONT_HERSHEY_SIMPLEX,
+            PANEL_FONT,
             UI_SCALE_SMALL,
             TEXT_MUTED,
-            1,
+            PANEL_TEXT_THICK,
             cv2.LINE_AA,
         )
         return y + 36
     # OpenCV putText: ASCII only (no Unicode).
-    y += 6
+    y += 4
+    gap = PANEL_CONTROLS_SECTION_GAP
     y = _draw_key_help_block(
         panel,
         x,
         y,
         w,
-        "Keys: display & overlay",
+        "Keys: panel & video",
         [
-            ("v", "toggle camera background"),
             ("u", "toggle left panel"),
+            ("v", "toggle camera background"),
+            ("d", "2+ cams: dual view vertical stack"),
+        ],
+    )
+    y += gap
+    y = _draw_key_help_block(
+        panel,
+        x,
+        y,
+        w,
+        "Keys: skeleton & debug",
+        [
             ("s", "toggle skeleton"),
-            ("a", "toggle polar plot + clip"),
-            ("g", "palette gallery"),
-            ("esc", "close gallery"),
             ("j", "toggle joint dots"),
             ("p", "toggle visibility text"),
             ("l", "toggle console log"),
-            ("d", "2+ cams: dual view + 3D strip (toggle)"),
         ],
     )
-    y += SECTION_GAP
+    y += gap
     y = _draw_key_help_block(
         panel,
         x,
         y,
         w,
-        "Keys: session & rig",
+        "Keys: polar plot & exports",
+        [
+            ("a", "toggle polar plot + clip strip"),
+            ("g", "palette gallery"),
+            ("o", "export polar PNG (exact file name)"),
+            ("e", "export gallery (click image: viewer)"),
+            ("esc", "close palette / export gallery"),
+        ],
+    )
+    y += gap
+    y = _draw_key_help_block(
+        panel,
+        x,
+        y,
+        w,
+        "Keys: multi-cam overlay align",
+        [
+            ("[ / ]", "primary overlay x -/+"),
+            ("; / '", "secondary overlay x -/+"),
+        ],
+    )
+    y += gap
+    y = _draw_key_help_block(
+        panel,
+        x,
+        y,
+        w,
+        "Keys: session & timeline",
         [
             ("q", "quit app"),
             ("b", "camera baseline (meters)"),
-            ("m", "edit body profile"),
-            ("?", "collapse key help"),
+            ("m", "body profile editor (all segments, popup)"),
+            ("?", "collapse / expand this key list"),
             ("mouse", "LIVE / REVIEW / REC"),
-            ("mouse", "review: drag 10s window"),
+            (
+                "mouse",
+                f"review: drag {int(SEG_SECONDS)}s window",
+            ),
         ],
     )
-    return y + 8
+    return y + 6
 
 
 def fit_video_to_pane(frame, pane_w, pane_h):

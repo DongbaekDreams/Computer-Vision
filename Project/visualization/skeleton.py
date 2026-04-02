@@ -8,13 +8,13 @@ from pose_processor import vis_ok
 
 
 def joint_colors(idx):
-    outline = (235, 235, 235)
+    outline = (240, 242, 248)
     if idx in LEFT_IDXS:
-        dot = (180, 170, 120)
+        dot = (240, 195, 120)
     elif idx in RIGHT_IDXS:
-        dot = (160, 140, 200)
+        dot = (215, 165, 245)
     else:
-        dot = (200, 200, 200)
+        dot = (210, 215, 225)
     return outline, dot
 
 

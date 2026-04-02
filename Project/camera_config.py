@@ -174,6 +174,7 @@ class MultiCameraReader:
         self._read_order = [cid for cid in order if cid in caps_by_id]
         if len(self._read_order) != len(caps_by_id):
             raise ValueError("read_order must list each camera id exactly once")
+        self._last_frame_wall: dict[str, float] = {cid: 0.0 for cid in self._read_order}
 
     @classmethod
     def from_camera_ids(
@@ -184,25 +185,57 @@ class MultiCameraReader:
         *,
         read_order: list[str] | None = None,
     ) -> MultiCameraReader:
+        def _has_live_frame(cap: cv2.VideoCapture, tries: int = 4) -> bool:
+            for _ in range(tries):
+                ok, fr = cap.read()
+                if not ok or fr is None:
+                    continue
+                if not is_inactive_virtual_cam_frame(fr):
+                    return True
+            return False
+
         caps: dict[str, cv2.VideoCapture] = {}
         multi = len(camera_ids) >= 2
-        backends = INTRINSICS_OPEN_BACKENDS if multi and sys.platform == "win32" else None
+        default_backends = INTRINSICS_OPEN_BACKENDS if multi and sys.platform == "win32" else None
         for cid in camera_ids:
-            cap = open_camera(cid, width, height, backends=backends)
-            if not cap.isOpened():
+            attempts: list[tuple[list[int] | None, bool]] = [
+                (default_backends, True),
+                (default_backends, False),
+            ]
+            live_cap: cv2.VideoCapture | None = None
+            for backends, prefer_mjpeg in attempts:
+                cap = open_camera(
+                    cid,
+                    width,
+                    height,
+                    prefer_mjpeg=prefer_mjpeg,
+                    backends=backends,
+                )
+                if not cap.isOpened():
+                    cap.release()
+                    continue
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                # Validate that this opened mode actually returns a live image.
+                if _has_live_frame(cap):
+                    live_cap = cap
+                    break
+                cap.release()
+
+            if live_cap is None:
                 for c in caps.values():
                     c.release()
-                raise RuntimeError(f"Camera index {cid} not available (failed to open).")
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            caps[cid] = cap
+                raise RuntimeError(
+                    f"Camera index {cid} opened but did not produce a live frame. "
+                    "Check index mapping / virtual cameras and USB bandwidth."
+                )
+            caps[cid] = live_cap
         inst = cls(caps, read_order=read_order or list(camera_ids))
         inst._warmup_reads()
         return inst
 
     def _warmup_reads(self) -> None:
-        """Drop startup placeholder frames (often black) before the dashboard loop."""
-        for _ in range(4):
-            self.read_batch(drain_first=True)
+        """Fast startup warmup: one lightweight read pass per camera."""
+        self.read_batch(drain_first=False)
 
     def read_batch(self, *, drain_first: bool = False) -> dict[str, np.ndarray]:
         """
@@ -210,6 +243,7 @@ class MultiCameraReader:
         Returns fresh copies (safe to use for the rest of the frame tick).
         """
         out: dict[str, np.ndarray] = {}
+        now = time.time()
         with _USB_READ_LOCK:
             for cid in self._read_order:
                 cap = self._caps[cid]
@@ -218,11 +252,20 @@ class MultiCameraReader:
                 ok, fr = cap.read()
                 if ok and fr is not None:
                     out[cid] = fr.copy()
+                    # Lightweight capture diagnostics for runtime jitter/lag analysis.
+                    self._last_frame_wall[cid] = now
         return out
 
     def release(self) -> None:
         for cap in self._caps.values():
             cap.release()
+
+    def get_frame_age_ms(self, camera_id: str) -> float | None:
+        """Return elapsed ms since the last successful frame read for camera_id."""
+        ts = float(self._last_frame_wall.get(camera_id, 0.0))
+        if ts <= 0.0:
+            return None
+        return max(0.0, (time.time() - ts) * 1000.0)
 
 
 @dataclass
@@ -313,6 +356,7 @@ class LastCameraSetup:
     use_triangulation: bool = True
     camera_rotations: dict[str, int] = field(default_factory=dict)  # cam_id -> degrees (0/90/180/270)
     camera_baseline_m: float | None = None
+    camera_overlay_offsets_px: dict[str, int] = field(default_factory=dict)  # cam_id -> x offset in px
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -321,6 +365,7 @@ class LastCameraSetup:
             "use_triangulation": self.use_triangulation,
             "camera_rotations": dict(self.camera_rotations),
             "camera_baseline_m": self.camera_baseline_m,
+            "camera_overlay_offsets_px": dict(self.camera_overlay_offsets_px),
         }
 
     @classmethod
@@ -340,6 +385,12 @@ class LastCameraSetup:
             for k, v in rot_raw.items()
             if is_local_camera_id(str(k))
         }
+        offs_raw = dict(d.get("camera_overlay_offsets_px", {}))
+        camera_overlay_offsets_px = {
+            str(k): int(v)
+            for k, v in offs_raw.items()
+            if is_local_camera_id(str(k))
+        }
         primary = str(d.get("primary_camera_id", ""))
         if not is_local_camera_id(primary) or primary not in selected:
             primary = selected[0] if selected else ""
@@ -349,6 +400,7 @@ class LastCameraSetup:
             use_triangulation=bool(d.get("use_triangulation", True)),
             camera_rotations=camera_rotations,
             camera_baseline_m=baseline_m,
+            camera_overlay_offsets_px=camera_overlay_offsets_px,
         )
 
 
@@ -443,7 +495,7 @@ sys.exit(1)
 """
 
 
-def _probe_single_index(index: int, timeout: float = 8.0) -> CameraInfo | None:
+def _probe_single_index(index: int, timeout: float = 1.2) -> CameraInfo | None:
     """
     Probe a single camera index in a subprocess to avoid hanging the caller.
     Rejects black/green-only frames and mostly-black virtual-cam splash screens.
@@ -465,7 +517,7 @@ def _probe_single_index(index: int, timeout: float = 8.0) -> CameraInfo | None:
     return None
 
 
-def detect_connected_cameras(max_index: int = 10) -> list[CameraInfo]:
+def detect_connected_cameras(max_index: int = 10, timeout: float = 1.2) -> list[CameraInfo]:
     """
     Probe OpenCV indices 0..max_index-1 in isolated subprocesses.
     Each index gets a timeout so a hung device can't block detection.
@@ -474,7 +526,7 @@ def detect_connected_cameras(max_index: int = 10) -> list[CameraInfo]:
     """
     result: list[CameraInfo] = []
     for i in range(max_index):
-        info = _probe_single_index(i)
+        info = _probe_single_index(i, timeout=timeout)
         if info is not None:
             result.append(info)
     return result

@@ -24,6 +24,17 @@ _PROJECT_DIR = Path(__file__).resolve().parent
 if str(_PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(_PROJECT_DIR))
 
+from config import (
+    ACCENT,
+    ACCENT_ALT,
+    ACCENT_SUCCESS,
+    PANEL_FONT,
+    SURFACE_BORDER,
+    TEXT_MUTED,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    WINDOW_BG,
+)
 from camera_config import (
     CALIBRATIONS_PATH,
     LAST_SETUP_PATH,
@@ -897,14 +908,14 @@ def _build_selection_tile(
     tile = _letterbox_bgr(frame, SELECT_TILE_W, SELECT_TILE_H)
 
     if cam_id == primary:
-        border = (84, 208, 120)
+        border = ACCENT_SUCCESS
     elif cam_id in selected:
-        border = (239, 170, 84)
+        border = ACCENT
     else:
-        border = (72, 76, 90)
+        border = SURFACE_BORDER
     cv2.rectangle(tile, (0, 0), (SELECT_TILE_W - 1, SELECT_TILE_H - 1), border, 3)
     if cam_id == focused_cam:
-        cv2.rectangle(tile, (6, 6), (SELECT_TILE_W - 7, SELECT_TILE_H - 7), (189, 135, 255), 2)
+        cv2.rectangle(tile, (6, 6), (SELECT_TILE_W - 7, SELECT_TILE_H - 7), ACCENT_ALT, 2)
 
     label = _short_label(cam_id)
     status = "SELECTED" if cam_id in selected else "off"
@@ -912,23 +923,29 @@ def _build_selection_tile(
         status += " | PRIMARY"
     if rot:
         status += f" | rot={rot}"
+    if cam_id == primary:
+        status_col = ACCENT_SUCCESS
+    elif cam_id in selected:
+        status_col = ACCENT
+    else:
+        status_col = TEXT_SECONDARY
     cv2.putText(
         tile,
         f"{label} ({cam_id})",
-        (10, 28),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.64,
-        (245, 245, 245),
+        (12, 40),
+        PANEL_FONT,
+        0.98,
+        TEXT_PRIMARY,
         2,
         cv2.LINE_AA,
     )
     cv2.putText(
         tile,
         status,
-        (10, 56),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.48,
-        border,
+        (12, 78),
+        PANEL_FONT,
+        0.66,
+        status_col,
         2,
         cv2.LINE_AA,
     )
@@ -946,30 +963,67 @@ def _render_selection_mosaic(
     """Render the full camera selection window as a single image."""
     if not ordered_ids:
         canvas = np.zeros((220, 900, 3), dtype=np.uint8)
-        cv2.putText(canvas, "No preview cameras available", (24, 76), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (240, 240, 240), 2, cv2.LINE_AA)
-        cv2.putText(canvas, "Q to quit", (24, 118), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (180, 180, 180), 1, cv2.LINE_AA)
+        canvas[:] = WINDOW_BG
+        cv2.putText(
+            canvas,
+            "No preview cameras available",
+            (24, 76),
+            PANEL_FONT,
+            1.0,
+            TEXT_PRIMARY,
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            canvas,
+            "Q to quit",
+            (24, 118),
+            PANEL_FONT,
+            0.62,
+            TEXT_MUTED,
+            1,
+            cv2.LINE_AA,
+        )
         return canvas
 
     cols = min(2, max(1, int(math.ceil(math.sqrt(len(ordered_ids))))))
     rows = int(math.ceil(len(ordered_ids) / float(cols)))
-    header_h = 112
+    header_h = 118
     canvas_w = cols * SELECT_TILE_W + (cols + 1) * SELECT_GAP
     canvas_h = header_h + rows * SELECT_TILE_H + (rows + 1) * SELECT_GAP
     canvas = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
-    canvas[:] = (14, 18, 26)
+    canvas[:] = WINDOW_BG
 
     selected_label = ", ".join(sorted(selected)) if selected else "none"
     help_line = "0-9 toggle | P primary | R rotate | Enter confirm | Q cancel"
-    cv2.putText(canvas, "Camera setup", (SELECT_GAP, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.95, (242, 242, 242), 2, cv2.LINE_AA)
-    cv2.putText(canvas, help_line, (SELECT_GAP, 64), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (188, 194, 206), 1, cv2.LINE_AA)
+    cv2.putText(
+        canvas,
+        "Camera setup",
+        (SELECT_GAP, 38),
+        PANEL_FONT,
+        1.02,
+        TEXT_PRIMARY,
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        canvas,
+        help_line,
+        (SELECT_GAP, 70),
+        PANEL_FONT,
+        0.56,
+        TEXT_MUTED,
+        1,
+        cv2.LINE_AA,
+    )
     cv2.putText(
         canvas,
         f"Selected: {selected_label} | Primary: {primary if primary else 'none'} | Focus: {focused_cam if focused_cam else 'none'}",
-        (SELECT_GAP, 92),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.52,
-        (239, 170, 84),
-        1,
+        (SELECT_GAP, 100),
+        PANEL_FONT,
+        0.58,
+        ACCENT,
+        2,
         cv2.LINE_AA,
     )
 

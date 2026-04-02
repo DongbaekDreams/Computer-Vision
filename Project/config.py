@@ -15,10 +15,10 @@ MODELS_DIR = _PROJECT_DIR / "models"
 CAM_INDEX = 0
 WINDOW = "MediaPipe Pose (Tasks) - Dashboard (q to quit)"
 
-# Dashboard layout
+# Dashboard layout (native pixel size of the composed frame; larger = sharper UI/video pane)
 PANEL_W = 500
-VIEW_H = 1020
-VIEW_W = 1600
+VIEW_H = 1288
+VIEW_W = 1920
 VIDEO_PAD = 14
 
 # Right-side plot + preview
@@ -28,44 +28,54 @@ PLOT_PAD = 14
 # Live buffer + recording
 MAX_REC_SECONDS = 60.0
 LIVE_BUFFER_SECONDS = 60.0
-SEG_SECONDS = 10.0
+SEG_SECONDS = 5.0
 
-# Plot styling
-PLOT_BG = (8, 8, 8)
-PLOT_RING = (40, 40, 40)
-PLOT_AXIS = (32, 32, 32)
+# High-res polar plot export (PNG); strokes scale with canvas in draw_polar_plot_segment
+POLAR_EXPORT_W = 3000
+POLAR_EXPORT_H = 2250
 
-# Global theme
-WINDOW_BG = (10, 12, 18)
-PANEL_BG = (18, 22, 30)
-PANEL_HEADER_BG = (28, 33, 44)
-PANEL_DIVIDER = (54, 62, 78)
-SURFACE_BG = (24, 29, 39)
-SURFACE_BG_ALT = (20, 24, 33)
-SURFACE_ELEVATED = (31, 37, 49)
-SURFACE_BORDER = (60, 70, 90)
-SURFACE_BORDER_SOFT = (44, 52, 68)
-TEXT_PRIMARY = (238, 242, 248)
-TEXT_SECONDARY = (177, 188, 204)
-TEXT_MUTED = (136, 148, 166)
-TEXT_DISABLED = (107, 118, 134)
-ACCENT = (239, 170, 84)
-ACCENT_ALT = (189, 135, 255)
-ACCENT_SUCCESS = (122, 205, 145)
-ACCENT_WARNING = (94, 204, 228)
-ACCENT_DANGER = (92, 96, 236)
-ACCENT_SOFT = (70, 86, 118)
-CARD_GLOW = (44, 58, 92)
-VIDEO_BG = (8, 10, 14)
+# Plot styling (aligned with dashboard chrome; avoids muddy brown/olive casts)
+PLOT_BG = (12, 13, 16)
+PLOT_RING = (42, 44, 54)
+PLOT_AXIS = (56, 58, 70)
+
+# Global theme — neutral charcoal + cool accent (entire window)
+WINDOW_BG = (16, 17, 20)
+PANEL_BG = (24, 25, 30)
+PANEL_HEADER_BG = (32, 33, 40)
+PANEL_DIVIDER = (52, 54, 64)
+SURFACE_BG = (30, 31, 38)
+SURFACE_BG_ALT = (24, 25, 32)
+SURFACE_ELEVATED = (40, 41, 50)
+SURFACE_BORDER = (66, 68, 80)
+SURFACE_BORDER_SOFT = (50, 52, 62)
+TEXT_PRIMARY = (248, 249, 252)
+TEXT_SECONDARY = (176, 180, 190)
+TEXT_MUTED = (128, 132, 144)
+TEXT_DISABLED = (92, 96, 108)
+# UI accent: cool sky (BGR) — avoids tan/brown reads on panels and timeline chips
+ACCENT = (255, 195, 120)
+ACCENT_ALT = (215, 165, 255)
+ACCENT_SUCCESS = (125, 215, 155)
+ACCENT_WARNING = (105, 205, 240)
+ACCENT_DANGER = (110, 115, 250)
+ACCENT_SOFT = (78, 92, 118)
+CARD_GLOW = (48, 58, 82)
+VIDEO_BG = (12, 13, 16)
 
 # Spacing + sizing
 APP_PAD = 16
 CARD_PAD = 14
 CARD_GAP = 16
 SECTION_GAP = 14
-BTN_ROW_H = 30
+# Tighter vertical gap between key-help boxes so the panel fits with larger key type.
+PANEL_CONTROLS_SECTION_GAP = 8
+BTN_ROW_H = 34
+# Timeline / polar strip control chips (LIVE, REC, …): larger + bolder than body UI
+TIMELINE_BTN_SCALE = 0.62
+TIMELINE_BTN_THICK = 2
 CONTROL_ROW_H = 28
-TIMELINE_H = 86
+TIMELINE_H = 96
 
 # Display behavior
 VIDEO_MAX_SCALE = 1.0
@@ -122,13 +132,13 @@ CLIP_BG = SURFACE_BG_ALT
 TL_BG = SURFACE_BG
 TL_BORDER = SURFACE_BORDER
 TL_BAR = SURFACE_BG_ALT
-TL_TICK = (114, 126, 146)
+TL_TICK = (96, 100, 112)
 TL_TEXT = TEXT_PRIMARY
 TL_TEXT_DIM = TEXT_MUTED
 
-WIN_FILL = (56, 73, 105)
-WIN_BORDER = (224, 233, 246)
-WIN_HANDLE = (248, 250, 252)
+WIN_FILL = (52, 68, 96)
+WIN_BORDER = (195, 205, 222)
+WIN_HANDLE = (228, 232, 240)
 
 PLAY_TICK = (245, 245, 245)
 PLAY_TICK_DIM = TEXT_MUTED
@@ -143,20 +153,30 @@ BTN_GREEN = ACCENT_SUCCESS
 BTN_YELLOW = ACCENT_WARNING
 BTN_BLUE = ACCENT
 
-UI_FONT = cv2.FONT_HERSHEY_SIMPLEX
+# Duplex for general panel prose. Plain for key glyphs: thinner strokes, less "blobby" at larger sizes.
+PANEL_FONT = cv2.FONT_HERSHEY_DUPLEX
+CONTROL_KEY_FONT = cv2.FONT_HERSHEY_PLAIN
+UI_FONT = PANEL_FONT
 UI_SCALE = 0.56
 UI_SCALE_SMALL = 0.47
 UI_SCALE_TINY = 0.40
-TITLE_SCALE = 0.90
+TITLE_SCALE = 0.86
 SUBTITLE_SCALE = 0.52
 STAT_LABEL_SCALE = 0.50
-STAT_VALUE_SCALE = 1.04
-SECTION_TITLE_SCALE = 0.60
-TABLE_TITLE_SCALE = 0.64
+STAT_VALUE_SCALE = 0.98
+SECTION_TITLE_SCALE = 0.58
+TABLE_TITLE_SCALE = 0.60
 TABLE_LABEL_SCALE = 0.53
-TABLE_VALUE_SCALE = 0.78
-CONTROL_KEY_SCALE = 0.52
+TABLE_VALUE_SCALE = 0.74
+# Plain runs smaller per unit scale than Duplex. Larger scale = readable key column.
+CONTROL_KEY_SCALE = 0.92
 CONTROL_DESC_SCALE = 0.49
+# Vertical rhythm for key-help cards (scales with CONTROL_KEY_SCALE).
+KEY_HELP_ROW_H = 26
+KEY_HELP_HEAD_H = 24
+# Single-pixel strokes read far better than 2 on Hershey fonts at panel sizes.
+PANEL_TEXT_THICK = 1
+PANEL_TITLE_THICK = 1
 
 # Polar palette gallery
 PALETTE_GALLERY_TITLE = "Polar Styles"
@@ -165,14 +185,29 @@ PALETTE_GALLERY_CARD_W = 146
 PALETTE_GALLERY_CARD_H = 112
 PALETTE_GALLERY_CARD_GAP = 14
 PALETTE_GALLERY_COLS = 3
-PALETTE_GALLERY_BG = (17, 21, 29)
-PALETTE_GALLERY_BORDER = (88, 100, 124)
-PALETTE_GALLERY_PREVIEW_BG = (21, 26, 35)
-PALETTE_GALLERY_SCRIM = (6, 8, 14)
+PALETTE_GALLERY_BG = (26, 28, 34)
+PALETTE_GALLERY_BORDER = (68, 72, 86)
+PALETTE_GALLERY_PREVIEW_BG = (32, 34, 42)
+PALETTE_GALLERY_SCRIM = (10, 11, 14)
 PALETTE_GALLERY_TEXT = TEXT_PRIMARY
 PALETTE_GALLERY_TEXT_MUTED = TEXT_SECONDARY
 PALETTE_GALLERY_SELECTED = ACCENT
 PALETTE_GALLERY_KEY = "g"
+
+# Polar PNG export gallery (saved under Project/polar_exports/)
+EXPORT_GALLERY_TITLE = "Polar exports"
+EXPORT_GALLERY_SUBTITLE = "Click thumbnail: full view in center pane  |  wheel  |  ESC"
+EXPORT_GALLERY_CARD_W = 198
+EXPORT_GALLERY_CARD_H = 128
+EXPORT_GALLERY_COLS = 3
+EXPORT_GALLERY_GAP = 12
+EXPORT_GALLERY_INNER_PAD = 18
+EXPORT_GALLERY_TITLE_H = 56
+EXPORT_GALLERY_FOOT_H = 38
+EXPORT_GALLERY_SCROLLBAR_W = 8
+EXPORT_GALLERY_KEY = "e"
+
+EXPORT_VIEWER_CAPTION_H = 48
 
 
 def _bgr(hex_rgb: str):
