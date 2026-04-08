@@ -237,7 +237,9 @@ class MultiCameraReader:
         """Fast startup warmup: one lightweight read pass per camera."""
         self.read_batch(drain_first=False)
 
-    def read_batch(self, *, drain_first: bool = False) -> dict[str, np.ndarray]:
+    def read_batch(
+        self, *, drain_first: bool = False, extra_drain: int = 0
+    ) -> dict[str, np.ndarray]:
         """
         Read each camera once in read_order under the USB lock.
         Returns fresh copies (safe to use for the rest of the frame tick).
@@ -248,7 +250,7 @@ class MultiCameraReader:
             for cid in self._read_order:
                 cap = self._caps[cid]
                 if drain_first:
-                    drain_stale_frames(cap, max_drain=3)
+                    drain_stale_frames(cap, max_drain=max(1, 3 + int(extra_drain)))
                 ok, fr = cap.read()
                 if ok and fr is not None:
                     out[cid] = fr.copy()

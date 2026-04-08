@@ -69,9 +69,56 @@ def vis_ok(v):
     return v is not None and np.isfinite(v) and float(v) >= VIS_MIN
 
 
-def process_pose(lm, frame_h, frame_w, mirror_view=MIRROR_VIEW):
+def best_2d_angle_values(per_cam_results, *, preferred_cam_id=None):
+    """
+    Pick 2D angle dict from whichever camera has the most finite joint angles.
+
+    Used when triangulation is unavailable or 3D confidence collapses. A naive
+    "use primary only" or "use first list entry" fails when the primary loses
+    pose on one side of the frame while a secondary camera still tracks.
+    On equal counts, prefers preferred_cam_id (dashboard primary).
+    """
+    if not per_cam_results:
+        return {k: np.nan for k in ANGLE_KEYS}
+
+    def finite_count(vals) -> int:
+        if not isinstance(vals, dict):
+            return 0
+        return sum(1 for k in ANGLE_KEYS if np.isfinite(vals.get(k, np.nan)))
+
+    ranked: list[tuple[int, int, dict]] = []
+    for r in per_cam_results:
+        cam_id = r[0]
+        vals = r[5]
+        n_ok = finite_count(vals)
+        pref = (
+            1
+            if preferred_cam_id is not None and str(cam_id) == str(preferred_cam_id)
+            else 0
+        )
+        ranked.append((n_ok, pref, vals))
+
+    ranked.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    if ranked[0][0] == 0:
+        return {k: np.nan for k in ANGLE_KEYS}
+    return dict(ranked[0][2])
+
+
+def process_pose(
+    lm,
+    frame_h,
+    frame_w,
+    mirror_view=MIRROR_VIEW,
+    *,
+    infer_h: int | None = None,
+    infer_w: int | None = None,
+):
     """
     Extract landmarks and compute angles from MediaPipe pose result.
+    Landmarks are normalized to the image passed to the landmarker (infer_*);
+    those are mapped to full-frame pixel coords (frame_h, frame_w) via the
+    same linear map as cv2.resize (stretch), so overlays stay aligned at edges.
+
     Returns (pts, vis, pts_norm, vis_arr, vals, pts_norm_snapshot, vis_snapshot)
     or (None, None, None, None, vals, None, None) if no pose.
     """
@@ -84,10 +131,17 @@ def process_pose(lm, frame_h, frame_w, mirror_view=MIRROR_VIEW):
     pts_norm = np.full((33, 2), np.nan, dtype=np.float32)
     vis_arr = np.zeros((33,), dtype=np.float32)
 
+    iw = float(infer_w if infer_w is not None else frame_w)
+    ih = float(infer_h if infer_h is not None else frame_h)
+    fw = float(frame_w)
+    fh = float(frame_h)
+    sx = fw / max(iw, 1.0)
+    sy = fh / max(ih, 1.0)
+
     for i in range(len(lm)):
         x = float(lm[i].x)
         y = float(lm[i].y)
-        pts[i] = np.array([x * frame_w, y * frame_h], dtype=np.float32)
+        pts[i] = np.array([x * iw * sx, y * ih * sy], dtype=np.float32)
         v = getattr(lm[i], "visibility", 0.0)
         vv = float(v) if v is not None else 0.0
         vis[i] = vv

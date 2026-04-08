@@ -171,6 +171,7 @@ def draw_polar_plot_segment(
 
     theta = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False).astype(np.float32)
 
+    drew_any_series = False
     for _, seg in seg_series_dict.items():
         ok = np.isfinite(seg)
         if ok.sum() < 2:
@@ -206,6 +207,19 @@ def draw_polar_plot_segment(
                 line_th,
                 cv2.LINE_AA,
             )
+        drew_any_series = True
+
+    if not drew_any_series:
+        cv2.putText(
+            canvas_bgr,
+            "no angle samples (tracking lost)",
+            (ox, msg_y),
+            PANEL_FONT,
+            sub_font,
+            TEXT_MUTED,
+            sub_th,
+            cv2.LINE_AA,
+        )
 
     if show_playhead:
         pi = int(np.clip(play_idx, 0, n - 1))

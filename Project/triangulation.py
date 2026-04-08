@@ -33,7 +33,7 @@ from landmarks import (
     R_SHOULDER,
     R_WRIST,
 )
-from pose_processor import ANGLE_KEYS
+from pose_processor import ANGLE_KEYS, best_2d_angle_values
 
 NUM_LANDMARKS = 33
 
@@ -197,6 +197,8 @@ def process_multi_cam_poses(
     per_cam_results: list[tuple[str, Any, Any, Any, dict, np.ndarray | None, np.ndarray | None]],
     calibrations: dict[str, Calibration],
     metric_scale: float | None = None,
+    *,
+    primary_camera_id: str | None = None,
 ) -> tuple[dict[str, float], np.ndarray | None, np.ndarray | None]:
     """
     Combine per-camera pose results and triangulate to get 3D angles.
@@ -223,12 +225,11 @@ def process_multi_cam_poses(
         per_cam_vis[cam_id] = vis_snap
         per_cam_image_size[cam_id] = cal.intrinsics.image_size
     if len(per_cam_pts_norm) < 2:
-        # Fallback: use first camera's 2D angles if available
-        if per_cam_results:
-            # (cam_id, pts, vis, pts_norm, vis_arr, vals, pts_norm_snapshot, vis_snapshot)
-            _, _, _, _, _, vals, _, _ = per_cam_results[0]
-            return vals, None, None
-        return {k: np.nan for k in ANGLE_KEYS}, None, None
+        # Fallback: best single-camera 2D angles (not "first in list" — often primary w/ no pose).
+        vals_fb = best_2d_angle_values(
+            per_cam_results, preferred_cam_id=primary_camera_id
+        )
+        return vals_fb, None, None
     pts_3d, vis_agg = triangulate_landmarks(
         calibrations, per_cam_pts_norm, per_cam_vis, per_cam_image_size
     )

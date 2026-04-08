@@ -81,15 +81,32 @@ TIMELINE_H = 96
 VIDEO_MAX_SCALE = 1.0
 VIDEO_SCALE = 1.0
 
-# Pose inference input scale (0,1]. Lower = faster, less latency.
-# Keeps output landmarks in full-frame normalized coords.
-INFER_INPUT_SCALE = 0.68
+# Pose inference input scale (0,1] for non-primary cameras. 1.0 = same quality as primary.
+INFER_INPUT_SCALE = 1.0
+# Primary (main pane) uses full resolution so edge-of-frame detection is strongest.
+PRIMARY_INFER_INPUT_SCALE = 1.0
+
+# Infer non-primary every N loop ticks (reuse last pose between). Use 1 for full-rate skeleton
+# on the secondary tile; raise to 2–3 only if CPU cannot keep up after fixing per-camera trackers.
+MULTICAM_NONPRIMARY_INFER_EVERY_N = 1
+
+# When 2+ cameras: non-primary infer input scale (primary uses PRIMARY_INFER_INPUT_SCALE).
+MULTICAM_SECONDARY_INFER_INPUT_SCALE = 1.0
+
+# Extra grab() drains before read when 2+ cameras. Large values fight the driver and make
+# the preview look jittery; keep low (0–2). Raise only if frames are visibly stale.
+MULTICAM_USB_EXTRA_DRAIN = 0
+
+# Pose detector confidence gates. Lower = better edge/partial-body recovery (more jitter).
+POSE_MIN_DETECTION_CONF = 0.35
+POSE_MIN_PRESENCE_CONF = 0.35
+POSE_MIN_TRACKING_CONF = 0.35
 
 # Adaptive smoothing (One Euro) for landmarks.
 # Keeps slow movement stable and fast movement responsive with minimal overhead.
 SMOOTH_2D_ENABLED = True
-SMOOTH_2D_MIN_CUTOFF = 1.8
-SMOOTH_2D_BETA = 0.08
+SMOOTH_2D_MIN_CUTOFF = 2.2
+SMOOTH_2D_BETA = 0.14
 SMOOTH_2D_D_CUTOFF = 1.0
 
 SMOOTH_3D_ENABLED = True

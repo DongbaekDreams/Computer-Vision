@@ -339,6 +339,8 @@ def draw_controls_section(panel, x, y, w, expanded):
         w,
         "Keys: multi-cam overlay align",
         [
+            ("k", "cycle primary (best cam -> main pane; saved)"),
+            ("config", "2+ USB cams glitch: MULTICAM_* in config.py"),
             ("[ / ]", "primary overlay x -/+"),
             ("; / '", "secondary overlay x -/+"),
         ],

@@ -33,6 +33,10 @@ from config import (
     MAX_REC_SECONDS,
     MIRROR_VIEW,
     INFER_INPUT_SCALE,
+    MULTICAM_NONPRIMARY_INFER_EVERY_N,
+    MULTICAM_SECONDARY_INFER_INPUT_SCALE,
+    MULTICAM_USB_EXTRA_DRAIN,
+    PRIMARY_INFER_INPUT_SCALE,
     PALETTE_GALLERY_BG,
     PALETTE_GALLERY_BORDER,
     PALETTE_GALLERY_CARD_GAP,
@@ -51,6 +55,9 @@ from config import (
     PANEL_TEXT_THICK,
     PANEL_TITLE_THICK,
     PANEL_W,
+    POSE_MIN_DETECTION_CONF,
+    POSE_MIN_PRESENCE_CONF,
+    POSE_MIN_TRACKING_CONF,
     PLOT_PAD,
     PLOT_W,
     POLAR_PALETTES,
@@ -97,7 +104,7 @@ from camera_config import (
 
 # (Legacy) Wall-clock sync between cameras was too strict with serialized USB reads;
 # triangulation now only requires a fresh frame from each active camera each tick.
-from pose_processor import ANGLE_KEYS, process_pose, round_deg
+from pose_processor import ANGLE_KEYS, best_2d_angle_values, process_pose, round_deg
 from state import angles_live, angles_rec, pose_live, pose_rec, t_live, t_rec
 from triangulation import compute_angles_3d, process_multi_cam_poses
 from ui.console import console_line
@@ -849,16 +856,6 @@ def main():
     _enable_high_dpi()
 
     base_options = python.BaseOptions(model_asset_path=TASK_PATH)
-    options = vision.PoseLandmarkerOptions(
-        base_options=base_options,
-        running_mode=vision.RunningMode.VIDEO,
-        num_poses=1,
-        min_pose_detection_confidence=0.5,
-        min_pose_presence_confidence=0.5,
-        min_tracking_confidence=0.5,
-        output_segmentation_masks=False,
-    )
-    landmarker = vision.PoseLandmarker.create_from_options(options)
 
     calibrations = load_calibrations()
     last_setup = load_last_setup()
@@ -982,6 +979,7 @@ def main():
     usb_read_order = [primary_camera_id] + [
         c for c in active_camera_ids if c != primary_camera_id
     ]
+    landmarker: vision.PoseLandmarker | None = None
     try:
         multi_cap = MultiCameraReader.from_camera_ids(
             list(active_camera_ids),
@@ -1034,10 +1032,57 @@ def main():
         f"USB read order {usb_read_order}, triangulation={'on' if use_triangulation else 'off'}"
     )
     print("Camera source uses saved rig with auto-remap for missing indices.")
+    if len(active_camera_ids) >= 2:
+        print(
+            f"Multi-cam: pose IMAGE mode + one model (low latency); "
+            f"non-primary infer every {MULTICAM_NONPRIMARY_INFER_EVERY_N} tick(s), "
+            f"secondary scale {MULTICAM_SECONDARY_INFER_INPUT_SCALE}, "
+            f"USB extra drain +{MULTICAM_USB_EXTRA_DRAIN} (MULTICAM_* in config.py)."
+        )
 
-    # Runtime undistortion is disabled by default. With index drift aliasing, applying
-    # stale intrinsics to a remapped camera can shift overlays significantly.
+    # Single-camera: VIDEO mode (internal tracker). Multi-cam: IMAGE mode + detect() so one
+    # model alternates streams without wrong VIDEO state; 2x VIDEO models was heavy and laggy.
+    pose_image_mode = len(active_camera_ids) >= 2
+    landmarker = vision.PoseLandmarker.create_from_options(
+        vision.PoseLandmarkerOptions(
+            base_options=base_options,
+            running_mode=(
+                vision.RunningMode.IMAGE
+                if pose_image_mode
+                else vision.RunningMode.VIDEO
+            ),
+            num_poses=1,
+            min_pose_detection_confidence=POSE_MIN_DETECTION_CONF,
+            min_pose_presence_confidence=POSE_MIN_PRESENCE_CONF,
+            min_tracking_confidence=POSE_MIN_TRACKING_CONF,
+            output_segmentation_masks=False,
+        )
+    )
+    mp_pose_ts = 0
+    if pose_image_mode:
+        print(
+            "Pose: IMAGE mode for multi-cam — temporal smoothing is from your 2D One Euro filter."
+        )
+
+    # Runtime undistortion improves edge quality substantially (often where pose fails first).
+    # Keep it disabled for remapped alias cameras, where intrinsics may belong to a different
+    # physical device and would bend geometry/overlays.
     undistort_maps: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for cid in active_camera_ids:
+        if cid in runtime_alias_map:
+            continue
+        cal = runtime_calibrations.get(cid)
+        if cal is None or getattr(cal, "intrinsics", None) is None:
+            continue
+        K = np.asarray(cal.intrinsics.K, dtype=np.float64)
+        dist = np.asarray(cal.intrinsics.dist, dtype=np.float64)
+        if K.shape != (3, 3) or dist.size == 0:
+            continue
+        newK, _roi = cv2.getOptimalNewCameraMatrix(K, dist, (CAM_W, CAM_H), 0.0)
+        m1, m2 = cv2.initUndistortRectifyMap(
+            K, dist, None, newK, (CAM_W, CAM_H), cv2.CV_32FC1
+        )
+        undistort_maps[cid] = (m1, m2)
 
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     try:
@@ -1054,10 +1099,6 @@ def main():
     last_log = 0.0
     frame_i = 0
     fps = 0.0
-    # MediaPipe VIDEO mode requires strictly increasing timestamps on every detect_for_video call.
-    # Multiple cameras in one loop iteration must not reuse the same value.
-    mp_pose_ts = 0
-
     show_skeleton = SHOW_SKELETON
     show_joints = SHOW_JOINTS
     show_vis = SHOW_VIS
@@ -1197,7 +1238,12 @@ def main():
             # One USB-locked batch read on this thread (see MultiCameraReader).
             frames_by_id = {}
             # Drain queued camera buffers before each read so overlays use near-live frames.
-            raw_batch = multi_cap.read_batch(drain_first=True)
+            raw_batch = multi_cap.read_batch(
+                drain_first=True,
+                extra_drain=MULTICAM_USB_EXTRA_DRAIN
+                if len(active_camera_ids) >= 2
+                else 0,
+            )
             for cid in active_camera_ids:
                 if cid not in raw_batch:
                     continue
@@ -1229,33 +1275,59 @@ def main():
             t_inf0 = time.time()
             per_cam_results = []
             t_now_s = time.time()
-            # Infer all active cameras every tick for minimum temporal lag.
+            # Primary: infer every tick. Non-primary: every N ticks when 2+ cams (USB + CPU).
             infer_ids = [cid for cid in active_camera_ids if cid in frames_by_id]
+            infer_stride = max(1, int(MULTICAM_NONPRIMARY_INFER_EVERY_N))
 
             for cid in infer_ids:
                 if cid not in frames_by_id:
                     continue
+                if (
+                    len(active_camera_ids) >= 2
+                    and infer_stride > 1
+                    and cid != primary_camera_id
+                    and cid in pose_cache
+                    and (frame_i % infer_stride) != 0
+                ):
+                    prev = pose_cache[cid]
+                    if prev[1] is not None:
+                        pose_cache_ts[cid] = t_now_s
+                        continue
                 frame = frames_by_id[cid]
-                if INFER_INPUT_SCALE < 0.999:
+                if cid == primary_camera_id:
+                    eff_scale = float(PRIMARY_INFER_INPUT_SCALE)
+                elif len(active_camera_ids) >= 2:
+                    eff_scale = float(MULTICAM_SECONDARY_INFER_INPUT_SCALE)
+                else:
+                    eff_scale = float(INFER_INPUT_SCALE)
+                if eff_scale < 0.999:
                     ih, iw = frame.shape[:2]
-                    nw = max(160, int(round(iw * INFER_INPUT_SCALE)))
-                    nh = max(120, int(round(ih * INFER_INPUT_SCALE)))
+                    nw = max(160, int(round(iw * eff_scale)))
+                    nh = max(120, int(round(ih * eff_scale)))
                     infer_frame = cv2.resize(
                         frame, (nw, nh), interpolation=cv2.INTER_AREA
                     )
                 else:
                     infer_frame = frame
+                inf_h, inf_w = infer_frame.shape[:2]
                 rgb = cv2.cvtColor(infer_frame, cv2.COLOR_BGR2RGB)
                 mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-                mp_pose_ts += 1
-                result = landmarker.detect_for_video(mp_img, mp_pose_ts)
+                if pose_image_mode:
+                    result = landmarker.detect(mp_img)
+                else:
+                    mp_pose_ts += 1
+                    result = landmarker.detect_for_video(mp_img, mp_pose_ts)
                 lm = (
                     result.pose_landmarks[0]
                     if (result.pose_landmarks and len(result.pose_landmarks) > 0)
                     else None
                 )
+                if lm is None:
+                    filt = lm_filters_2d.get(cid)
+                    if filt is not None:
+                        filt.reset_all()
                 h, w = frame.shape[:2]
-                out = process_pose(lm, h, w)
+                out = process_pose(lm, h, w, infer_h=inf_h, infer_w=inf_w)
                 pts, vis, pts_norm, vis_arr, vals, pts_norm_snapshot, vis_snapshot = out
                 if (
                     SMOOTH_2D_ENABLED
@@ -1326,6 +1398,7 @@ def main():
                     per_cam_results,
                     runtime_calibrations,
                     metric_scale=metric_scale,
+                    primary_camera_id=primary_camera_id,
                 )
                 for r in per_cam_results:
                     if r[0] == primary_camera_id:
@@ -1341,14 +1414,16 @@ def main():
                     valid_3d = np.isfinite(vis_3d_live) & (vis_3d_live >= VIS_MIN)
                     pts_3d_live = lm_filter_3d.update(pts_3d_live, t_now_s, update_mask=valid_3d)
                     vals = compute_angles_3d(pts_3d_live, vis_3d_live)
-                # If triangulation confidence drops (common when one camera loses pose),
-                # fall back to primary 2D angles so polar chart remains usable.
+                # If triangulation confidence drops, use best single-camera 2D angles
+                # (secondary may still track when primary fails on one side of the frame).
                 if (
                     pts_3d_live is None
                     or vis_3d_live is None
                     or int(np.sum(np.isfinite(vis_3d_live) & (vis_3d_live >= VIS_MIN))) < 10
                 ):
-                    vals = dict(primary_vals_2d)
+                    vals = best_2d_angle_values(
+                        per_cam_results, preferred_cam_id=primary_camera_id
+                    )
                 for r in per_cam_results:
                     if r[0] == primary_camera_id:
                         _, pts, vis, _, _, _, pts_norm_snapshot, vis_snapshot = r
@@ -1361,9 +1436,12 @@ def main():
                             )
                         break
             else:
+                vals = best_2d_angle_values(
+                    per_cam_results, preferred_cam_id=primary_camera_id
+                )
                 for r in per_cam_results:
                     if r[0] == primary_camera_id:
-                        _, pts, vis, _, _, vals, pts_norm_snapshot, vis_snapshot = r
+                        _, pts, vis, _, _, _, pts_norm_snapshot, vis_snapshot = r
                         if pts is not None:
                             dx = int(camera_overlay_offsets_px.get(primary_camera_id, 0))
                             if dx != 0:
@@ -1372,9 +1450,22 @@ def main():
                                 video, pts, vis, show_skeleton, show_joints, show_vis
                             )
                         break
-                else:
-                    if per_cam_results:
-                        _, _, _, _, _, vals, pts_norm_snapshot, vis_snapshot = per_cam_results[0]
+
+            # Primary may have no pose while a secondary still tracks — polar/clip use best view.
+            if pts_norm_snapshot is None and per_cam_results:
+                best_vn = -1
+                best_pns = None
+                best_vs = None
+                for r in per_cam_results:
+                    _, _, _, _, _, _, pns, vs = r
+                    if pns is None or vs is None:
+                        continue
+                    vn = int(np.sum(np.isfinite(vs) & (vs >= VIS_MIN)))
+                    if vn > best_vn:
+                        best_vn = vn
+                        best_pns, best_vs = pns, vs
+                if best_vn > 0 and best_pns is not None and best_vs is not None:
+                    pts_norm_snapshot, vis_snapshot = best_pns, best_vs
 
             resolved_body = resolve_body_profile(body_profile, pts_3d_live)
 
@@ -1861,6 +1952,26 @@ def main():
                 elif key in (ord("d"), ord("D")):
                     if len(active_camera_ids) >= 2:
                         show_dual_cam_strip = not show_dual_cam_strip
+                elif key in (ord("k"), ord("K")):
+                    if len(active_camera_ids) >= 2:
+                        ordered = sorted(active_camera_ids, key=int)
+                        try:
+                            ix = ordered.index(primary_camera_id)
+                        except ValueError:
+                            ix = -1
+                        primary_camera_id = ordered[(ix + 1) % len(ordered)]
+                        _save_runtime_setup(
+                            active_camera_ids,
+                            primary_camera_id,
+                            use_triangulation,
+                            camera_rotations,
+                            baseline_m,
+                            camera_overlay_offsets_px,
+                        )
+                        print(
+                            f"Primary camera (main pane + full-res infer): "
+                            f"{_short_label(primary_camera_id)}"
+                        )
                 elif key in (ord("a"), ord("A")):
                     show_polar = not show_polar
                     if not show_polar:
@@ -2012,7 +2123,8 @@ def main():
     finally:
         multi_cap.release()
         cv2.destroyAllWindows()
-        landmarker.close()
+        if landmarker is not None:
+            landmarker.close()
         if SHOW_CONSOLE:
             sys.stdout.write("\n")
             sys.stdout.flush()
