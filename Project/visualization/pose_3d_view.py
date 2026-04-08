@@ -5,7 +5,16 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from config import POSE_3D_WORLD_Y_ROT_DEG, POSE_3D_WORLD_Z_ROT_DEG, VIDEO_BG, VIS_MIN
+from config import (
+    PANEL_FONT,
+    PANEL_TEXT_THICK,
+    POSE_3D_WORLD_Y_ROT_DEG,
+    POSE_3D_WORLD_Z_ROT_DEG,
+    TEXT_MUTED,
+    TEXT_PRIMARY,
+    VIDEO_BG,
+    VIS_MIN,
+)
 from landmarks import EDGES, EDGE_COLORS, edge_thickness
 
 
@@ -14,10 +23,10 @@ def _blit_title(canvas: np.ndarray, title: str, subtitle: str | None = None) -> 
         canvas,
         title,
         (12, 22),
-        cv2.FONT_HERSHEY_SIMPLEX,
+        PANEL_FONT,
         0.52,
-        (220, 224, 232),
-        1,
+        TEXT_PRIMARY,
+        PANEL_TEXT_THICK,
         cv2.LINE_AA,
     )
     if subtitle:
@@ -25,10 +34,10 @@ def _blit_title(canvas: np.ndarray, title: str, subtitle: str | None = None) -> 
             canvas,
             subtitle,
             (12, 44),
-            cv2.FONT_HERSHEY_SIMPLEX,
+            PANEL_FONT,
             0.45,
-            (140, 150, 180),
-            1,
+            TEXT_MUTED,
+            PANEL_TEXT_THICK,
             cv2.LINE_AA,
         )
 

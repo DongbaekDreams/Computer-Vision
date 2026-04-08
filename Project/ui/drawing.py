@@ -35,7 +35,6 @@ from config import (
     TEXT_PRIMARY,
     TEXT_SECONDARY,
     TITLE_SCALE,
-    UI_FONT,
     UI_SCALE,
     UI_SCALE_SMALL,
     VIDEO_BG,
@@ -387,7 +386,7 @@ def draw_button(img, rect, label, fill, text_col=BTN_TEXT, scale=UI_SCALE, thick
     cv2.rectangle(img, (x0, y0), (x1, y1), fill, -1)
     cv2.rectangle(img, (x0, y0), (x1, y1), BTN_BORDER, 1)
     cv2.line(img, (x0 + 1, y0 + 1), (x1 - 1, y0 + 1), SURFACE_BORDER, 1, cv2.LINE_AA)
-    (tw, th), _ = cv2.getTextSize(label, UI_FONT, scale, thick)
+    (tw, th), _ = cv2.getTextSize(label, PANEL_FONT, scale, thick)
     tx = x0 + (x1 - x0 - tw) // 2
     ty = y0 + (y1 - y0 + th) // 2 - 1
-    cv2.putText(img, label, (tx, ty), UI_FONT, scale, text_col, thick, cv2.LINE_AA)
+    cv2.putText(img, label, (tx, ty), PANEL_FONT, scale, text_col, thick, cv2.LINE_AA)

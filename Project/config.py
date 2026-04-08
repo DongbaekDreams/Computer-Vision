@@ -34,21 +34,21 @@ SEG_SECONDS = 5.0
 POLAR_EXPORT_W = 3000
 POLAR_EXPORT_H = 2250
 
-# Plot styling (aligned with dashboard chrome; avoids muddy brown/olive casts)
-PLOT_BG = (12, 13, 16)
-PLOT_RING = (42, 44, 54)
-PLOT_AXIS = (56, 58, 70)
+# Plot styling (BGR: keep B >= R on dark grays so fills read slate, not brown)
+PLOT_BG = (16, 15, 15)
+PLOT_RING = (46, 42, 40)
+PLOT_AXIS = (62, 58, 56)
 
-# Global theme — neutral charcoal + cool accent (entire window)
-WINDOW_BG = (16, 17, 20)
-PANEL_BG = (24, 25, 30)
-PANEL_HEADER_BG = (32, 33, 40)
-PANEL_DIVIDER = (52, 54, 64)
-SURFACE_BG = (30, 31, 38)
-SURFACE_BG_ALT = (24, 25, 32)
-SURFACE_ELEVATED = (40, 41, 50)
-SURFACE_BORDER = (66, 68, 80)
-SURFACE_BORDER_SOFT = (50, 52, 62)
+# Global theme — neutral / cool charcoal (R > B on dark UI reads warm in BGR)
+WINDOW_BG = (20, 19, 19)
+PANEL_BG = (27, 25, 25)
+PANEL_HEADER_BG = (35, 33, 32)
+PANEL_DIVIDER = (58, 54, 52)
+SURFACE_BG = (34, 32, 31)
+SURFACE_BG_ALT = (28, 26, 26)
+SURFACE_ELEVATED = (42, 39, 38)
+SURFACE_BORDER = (74, 70, 68)
+SURFACE_BORDER_SOFT = (56, 52, 51)
 TEXT_PRIMARY = (248, 249, 252)
 TEXT_SECONDARY = (176, 180, 190)
 TEXT_MUTED = (128, 132, 144)
@@ -60,8 +60,8 @@ ACCENT_SUCCESS = (125, 215, 155)
 ACCENT_WARNING = (105, 205, 240)
 ACCENT_DANGER = (110, 115, 250)
 ACCENT_SOFT = (78, 92, 118)
-CARD_GLOW = (48, 58, 82)
-VIDEO_BG = (12, 13, 16)
+CARD_GLOW = (58, 50, 48)
+VIDEO_BG = (16, 15, 15)
 
 # Spacing + sizing
 APP_PAD = 16
@@ -73,13 +73,29 @@ PANEL_CONTROLS_SECTION_GAP = 8
 BTN_ROW_H = 34
 # Timeline / polar strip control chips (LIVE, REC, …): larger + bolder than body UI
 TIMELINE_BTN_SCALE = 0.62
-TIMELINE_BTN_THICK = 2
+TIMELINE_BTN_THICK = 1
 CONTROL_ROW_H = 28
 TIMELINE_H = 96
 
 # Display behavior
 VIDEO_MAX_SCALE = 1.0
 VIDEO_SCALE = 1.0
+
+# Pose inference input scale (0,1]. Lower = faster, less latency.
+# Keeps output landmarks in full-frame normalized coords.
+INFER_INPUT_SCALE = 0.68
+
+# Adaptive smoothing (One Euro) for landmarks.
+# Keeps slow movement stable and fast movement responsive with minimal overhead.
+SMOOTH_2D_ENABLED = True
+SMOOTH_2D_MIN_CUTOFF = 1.8
+SMOOTH_2D_BETA = 0.08
+SMOOTH_2D_D_CUTOFF = 1.0
+
+SMOOTH_3D_ENABLED = True
+SMOOTH_3D_MIN_CUTOFF = 1.4
+SMOOTH_3D_BETA = 0.06
+SMOOTH_3D_D_CUTOFF = 1.0
 
 # Mirror preview (and swap L/R so labels match what you see)
 MIRROR_VIEW = True
@@ -111,9 +127,10 @@ VIS_MIN = 0.30
 POSE_3D_WORLD_Z_ROT_DEG = 90.0  # spin about board normal (+Z in OpenCV object frame); try -90 if wrong
 POSE_3D_WORLD_Y_ROT_DEG = 0.0  # optional extra yaw about +Y
 
-# Tasks model asset (.task) - resolved relative to package
-TASK_PATH = str(MODELS_DIR / "pose_landmarker.task")
-TASK_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task"
+# Tasks model asset (.task) - resolved relative to package.
+# Use FULL for much better real-time responsiveness than HEAVY.
+TASK_PATH = str(MODELS_DIR / "pose_landmarker_full.task")
+TASK_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task"
 
 # Style
 EDGE_THICK = 4
@@ -132,7 +149,7 @@ CLIP_BG = SURFACE_BG_ALT
 TL_BG = SURFACE_BG
 TL_BORDER = SURFACE_BORDER
 TL_BAR = SURFACE_BG_ALT
-TL_TICK = (96, 100, 112)
+TL_TICK = (108, 102, 100)
 TL_TEXT = TEXT_PRIMARY
 TL_TEXT_DIM = TEXT_MUTED
 
@@ -185,10 +202,10 @@ PALETTE_GALLERY_CARD_W = 146
 PALETTE_GALLERY_CARD_H = 112
 PALETTE_GALLERY_CARD_GAP = 14
 PALETTE_GALLERY_COLS = 3
-PALETTE_GALLERY_BG = (26, 28, 34)
-PALETTE_GALLERY_BORDER = (68, 72, 86)
-PALETTE_GALLERY_PREVIEW_BG = (32, 34, 42)
-PALETTE_GALLERY_SCRIM = (10, 11, 14)
+PALETTE_GALLERY_BG = (33, 31, 30)
+PALETTE_GALLERY_BORDER = (76, 72, 70)
+PALETTE_GALLERY_PREVIEW_BG = (38, 36, 35)
+PALETTE_GALLERY_SCRIM = (12, 11, 11)
 PALETTE_GALLERY_TEXT = TEXT_PRIMARY
 PALETTE_GALLERY_TEXT_MUTED = TEXT_SECONDARY
 PALETTE_GALLERY_SELECTED = ACCENT

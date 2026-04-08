@@ -9,6 +9,7 @@ import numpy as np
 from config import (
     DEFAULT_POLAR_PALETTE_KEY,
     PANEL_FONT,
+    PANEL_TEXT_THICK,
     POLAR_EXPORT_H,
     POLAR_EXPORT_W,
     TEXT_MUTED,
@@ -95,8 +96,8 @@ def draw_polar_plot_segment(
     msg_y = int(round(76 * s))
     title_font = 0.74 * s
     sub_font = 0.48 * s
-    title_th = max(1, int(round(2 * s)))
-    sub_th = max(1, int(round(1 * s)))
+    title_th = PANEL_TEXT_THICK
+    sub_th = PANEL_TEXT_THICK
     ring_th = max(1, int(round(1 * s)))
     axis_th = max(1, int(round(1 * s)))
     line_th = max(1, int(round(2 * s)))

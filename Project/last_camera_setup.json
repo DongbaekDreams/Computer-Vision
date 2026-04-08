@@ -6,9 +6,9 @@
   "primary_camera_id": "1",
   "use_triangulation": true,
   "camera_rotations": {},
-  "camera_baseline_m": 0.32,
+  "camera_baseline_m": 0.545,
   "camera_overlay_offsets_px": {
-    "1": 28,
-    "4": -86
+    "1": 46,
+    "4": -32
   }
 }

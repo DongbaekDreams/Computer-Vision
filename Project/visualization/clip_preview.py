@@ -3,7 +3,7 @@
 import cv2
 import numpy as np
 
-from config import VIS_MIN
+from config import PANEL_FONT, PANEL_TEXT_THICK, TEXT_MUTED, TEXT_PRIMARY, VIS_MIN
 from landmarks import EDGES, EDGE_COLORS, edge_thickness
 from pose_processor import vis_ok
 from visualization.skeleton import joint_colors
@@ -13,7 +13,16 @@ def draw_pose_clip(canvas_bgr, pts_norm, vis_arr, title="Clip (loop)"):
     h, w = canvas_bgr.shape[:2]
     canvas_bgr[:] = (10, 10, 10)
 
-    cv2.putText(canvas_bgr, title, (12, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.52, (220, 220, 220), 1, cv2.LINE_AA)
+    cv2.putText(
+        canvas_bgr,
+        title,
+        (12, 22),
+        PANEL_FONT,
+        0.52,
+        TEXT_PRIMARY,
+        PANEL_TEXT_THICK,
+        cv2.LINE_AA,
+    )
 
     box_x0, box_y0 = 10, 32
     box_x1, box_y1 = w - 10, h - 10
@@ -21,7 +30,16 @@ def draw_pose_clip(canvas_bgr, pts_norm, vis_arr, title="Clip (loop)"):
     cv2.rectangle(canvas_bgr, (box_x0, box_y0), (box_x1, box_y1), (45, 45, 45), 1)
 
     if pts_norm is None or vis_arr is None:
-        cv2.putText(canvas_bgr, "no pose", (12, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (150, 150, 150), 1, cv2.LINE_AA)
+        cv2.putText(
+            canvas_bgr,
+            "no pose",
+            (12, 46),
+            PANEL_FONT,
+            0.48,
+            TEXT_MUTED,
+            PANEL_TEXT_THICK,
+            cv2.LINE_AA,
+        )
         return
 
     pts_norm = pts_norm.astype(np.float32)
@@ -29,7 +47,16 @@ def draw_pose_clip(canvas_bgr, pts_norm, vis_arr, title="Clip (loop)"):
 
     ok = np.isfinite(pts_norm[:, 0]) & np.isfinite(pts_norm[:, 1]) & (vis_arr >= VIS_MIN)
     if int(ok.sum()) < 2:
-        cv2.putText(canvas_bgr, "no pose", (12, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (150, 150, 150), 1, cv2.LINE_AA)
+        cv2.putText(
+            canvas_bgr,
+            "no pose",
+            (12, 46),
+            PANEL_FONT,
+            0.48,
+            TEXT_MUTED,
+            PANEL_TEXT_THICK,
+            cv2.LINE_AA,
+        )
         return
 
     xs = pts_norm[ok, 0]

@@ -10,6 +10,7 @@ from pathlib import Path
 #
 import cv2
 import numpy as np
+from adaptive_filter import LandmarkArrayFilter
 from body_profile import (
     BodyProfile,
     ResolvedBodyProfile,
@@ -31,6 +32,7 @@ from config import (
     LOG_INTERVAL,
     MAX_REC_SECONDS,
     MIRROR_VIEW,
+    INFER_INPUT_SCALE,
     PALETTE_GALLERY_BG,
     PALETTE_GALLERY_BORDER,
     PALETTE_GALLERY_CARD_GAP,
@@ -62,7 +64,16 @@ from config import (
     TASK_URL,
     TEXT_SECONDARY,
     TIMELINE_H,
+    SMOOTH_2D_BETA,
+    SMOOTH_2D_D_CUTOFF,
+    SMOOTH_2D_ENABLED,
+    SMOOTH_2D_MIN_CUTOFF,
+    SMOOTH_3D_BETA,
+    SMOOTH_3D_D_CUTOFF,
+    SMOOTH_3D_ENABLED,
+    SMOOTH_3D_MIN_CUTOFF,
     VIDEO_PAD,
+    VIS_MIN,
     VIEW_H,
     VIEW_W,
     WINDOW,
@@ -88,7 +99,7 @@ from camera_config import (
 # triangulation now only requires a fresh frame from each active camera each tick.
 from pose_processor import ANGLE_KEYS, process_pose, round_deg
 from state import angles_live, angles_rec, pose_live, pose_rec, t_live, t_rec
-from triangulation import process_multi_cam_poses
+from triangulation import compute_angles_3d, process_multi_cam_poses
 from ui.console import console_line
 from ui.drawing import (
     draw_controls_section,
@@ -332,7 +343,7 @@ def _compose_dual_cam_and_3d(
         PANEL_FONT,
         0.55,
         ACCENT_SUCCESS,
-        2,
+        PANEL_TEXT_THICK,
         cv2.LINE_AA,
     )
     cv2.putText(
@@ -342,7 +353,7 @@ def _compose_dual_cam_and_3d(
         PANEL_FONT,
         0.55,
         ACCENT_ALT,
-        2,
+        PANEL_TEXT_THICK,
         cv2.LINE_AA,
     )
     hsep = np.full((gap, pane_inner_w, 3), 24, dtype=np.uint8)
@@ -842,9 +853,9 @@ def main():
         base_options=base_options,
         running_mode=vision.RunningMode.VIDEO,
         num_poses=1,
-        min_pose_detection_confidence=0.6,
-        min_pose_presence_confidence=0.6,
-        min_tracking_confidence=0.7,
+        min_pose_detection_confidence=0.5,
+        min_pose_presence_confidence=0.5,
+        min_tracking_confidence=0.5,
         output_segmentation_masks=False,
     )
     landmarker = vision.PoseLandmarker.create_from_options(options)
@@ -1073,6 +1084,20 @@ def main():
         "idx": 0,
         "img_rect": None,
     }
+    # Dual-cam latency control: infer one camera per tick, reuse the other briefly.
+    pose_cache: dict[str, tuple] = {}
+    pose_cache_ts: dict[str, float] = {}
+    pose_max_stale_s = 0.25
+    lm_filters_2d: dict[str, LandmarkArrayFilter] = {}
+    lm_filter_3d: LandmarkArrayFilter | None = None
+    if SMOOTH_3D_ENABLED:
+        lm_filter_3d = LandmarkArrayFilter(
+            33,
+            3,
+            min_cutoff=SMOOTH_3D_MIN_CUTOFF,
+            beta=SMOOTH_3D_BETA,
+            d_cutoff=SMOOTH_3D_D_CUTOFF,
+        )
 
     def _close_export_viewer() -> None:
         export_viewer_ctx["open"] = False
@@ -1171,7 +1196,8 @@ def main():
         while True:
             # One USB-locked batch read on this thread (see MultiCameraReader).
             frames_by_id = {}
-            raw_batch = multi_cap.read_batch()
+            # Drain queued camera buffers before each read so overlays use near-live frames.
+            raw_batch = multi_cap.read_batch(drain_first=True)
             for cid in active_camera_ids:
                 if cid not in raw_batch:
                     continue
@@ -1202,11 +1228,24 @@ def main():
 
             t_inf0 = time.time()
             per_cam_results = []
-            for cid in active_camera_ids:
+            t_now_s = time.time()
+            # Infer all active cameras every tick for minimum temporal lag.
+            infer_ids = [cid for cid in active_camera_ids if cid in frames_by_id]
+
+            for cid in infer_ids:
                 if cid not in frames_by_id:
                     continue
                 frame = frames_by_id[cid]
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                if INFER_INPUT_SCALE < 0.999:
+                    ih, iw = frame.shape[:2]
+                    nw = max(160, int(round(iw * INFER_INPUT_SCALE)))
+                    nh = max(120, int(round(ih * INFER_INPUT_SCALE)))
+                    infer_frame = cv2.resize(
+                        frame, (nw, nh), interpolation=cv2.INTER_AREA
+                    )
+                else:
+                    infer_frame = frame
+                rgb = cv2.cvtColor(infer_frame, cv2.COLOR_BGR2RGB)
                 mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
                 mp_pose_ts += 1
                 result = landmarker.detect_for_video(mp_img, mp_pose_ts)
@@ -1217,7 +1256,47 @@ def main():
                 )
                 h, w = frame.shape[:2]
                 out = process_pose(lm, h, w)
-                per_cam_results.append((cid, *out))
+                pts, vis, pts_norm, vis_arr, vals, pts_norm_snapshot, vis_snapshot = out
+                if (
+                    SMOOTH_2D_ENABLED
+                    and pts_norm_snapshot is not None
+                    and vis_snapshot is not None
+                ):
+                    filt = lm_filters_2d.get(cid)
+                    if filt is None:
+                        filt = LandmarkArrayFilter(
+                            33,
+                            2,
+                            min_cutoff=SMOOTH_2D_MIN_CUTOFF,
+                            beta=SMOOTH_2D_BETA,
+                            d_cutoff=SMOOTH_2D_D_CUTOFF,
+                        )
+                        lm_filters_2d[cid] = filt
+                    valid_2d = np.isfinite(vis_snapshot) & (vis_snapshot >= VIS_MIN)
+                    pts_norm_f = filt.update(pts_norm_snapshot, t_now_s, update_mask=valid_2d)
+                    pts_norm_snapshot = pts_norm_f.copy()
+                    pts_norm = pts_norm_f.copy() if pts_norm is not None else pts_norm
+                    if pts is not None:
+                        pts = {
+                            j: np.array(
+                                [pts_norm_f[j, 0] * float(w), pts_norm_f[j, 1] * float(h)],
+                                dtype=np.float32,
+                            )
+                            for j in range(pts_norm_f.shape[0])
+                        }
+                out = (pts, vis, pts_norm, vis_arr, vals, pts_norm_snapshot, vis_snapshot)
+                cached = (cid, *out)
+                pose_cache[cid] = cached
+                pose_cache_ts[cid] = t_now_s
+
+            for cid in active_camera_ids:
+                cached = pose_cache.get(cid)
+                ts = float(pose_cache_ts.get(cid, 0.0))
+                if cached is None:
+                    continue
+                if (t_now_s - ts) > pose_max_stale_s:
+                    continue
+                per_cam_results.append(cached)
             infer_ms = (time.time() - t_inf0) * 1000.0
 
             frame_i += 1
@@ -1236,17 +1315,40 @@ def main():
             L_sho_i = R_sho_i = L_elb_i = R_elb_i = None
 
             vals = {k: np.nan for k in ANGLE_KEYS}
+            primary_vals_2d = {k: np.nan for k in ANGLE_KEYS}
             pts_norm_snapshot = None
             vis_snapshot = None
             pts_3d_live = None
             vis_3d_live = None
 
-            if use_triangulation and len(per_cam_results) >= 2 and frames_ready_for_3d:
+            if use_triangulation and len(per_cam_results) >= 2:
                 vals, pts_3d_live, vis_3d_live = process_multi_cam_poses(
                     per_cam_results,
                     runtime_calibrations,
                     metric_scale=metric_scale,
                 )
+                for r in per_cam_results:
+                    if r[0] == primary_camera_id:
+                        # (cid, pts, vis, pts_norm, vis_arr, vals, pts_norm_snapshot, vis_snapshot)
+                        primary_vals_2d = r[5]
+                        break
+                if (
+                    SMOOTH_3D_ENABLED
+                    and lm_filter_3d is not None
+                    and pts_3d_live is not None
+                    and vis_3d_live is not None
+                ):
+                    valid_3d = np.isfinite(vis_3d_live) & (vis_3d_live >= VIS_MIN)
+                    pts_3d_live = lm_filter_3d.update(pts_3d_live, t_now_s, update_mask=valid_3d)
+                    vals = compute_angles_3d(pts_3d_live, vis_3d_live)
+                # If triangulation confidence drops (common when one camera loses pose),
+                # fall back to primary 2D angles so polar chart remains usable.
+                if (
+                    pts_3d_live is None
+                    or vis_3d_live is None
+                    or int(np.sum(np.isfinite(vis_3d_live) & (vis_3d_live >= VIS_MIN))) < 10
+                ):
+                    vals = dict(primary_vals_2d)
                 for r in per_cam_results:
                     if r[0] == primary_camera_id:
                         _, pts, vis, _, _, _, pts_norm_snapshot, vis_snapshot = r
