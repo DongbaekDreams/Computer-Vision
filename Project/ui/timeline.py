@@ -24,7 +24,10 @@ from config import (
     TL_TEXT,
     TL_TEXT_DIM,
     TL_TICK,
-    UI_FONT,
+    TIMELINE_BTN_SCALE,
+    TIMELINE_BTN_THICK,
+    PANEL_FONT,
+    PANEL_TEXT_THICK,
     UI_SCALE_SMALL,
     WIN_BORDER,
     WIN_FILL,
@@ -50,7 +53,7 @@ def trim_time_buffer(t_deque, *data_deques, keep_last_seconds=60.0):
             dq.popleft()
 
 
-def _fit_text_to_width_ascii(text, max_w_px, font=UI_FONT, scale=UI_SCALE_SMALL, thickness=1):
+def _fit_text_to_width_ascii(text, max_w_px, font=PANEL_FONT, scale=UI_SCALE_SMALL, thickness=1):
     if max_w_px <= 0 or text == "":
         return ""
     (tw, _), _ = cv2.getTextSize(text, font, scale, thickness)
@@ -120,12 +123,28 @@ pinned_start_t = 0.0
 
 def draw_mode_toggle(img, x, y, h, is_live_mode):
     global live_btn_rect, review_btn_rect
-    w_each = 72
+    w_each = 86
     gap = 8
     live_btn_rect = (x, y, x + w_each, y + h)
     review_btn_rect = (x + w_each + gap, y, x + 2 * w_each + gap, y + h)
-    draw_button(img, live_btn_rect, "LIVE", BTN_BLUE if is_live_mode else BTN_BG, BTN_TEXT, scale=UI_SCALE_SMALL, thick=1)
-    draw_button(img, review_btn_rect, "REVIEW", BTN_BLUE if (not is_live_mode) else BTN_BG, BTN_TEXT, scale=UI_SCALE_SMALL, thick=1)
+    draw_button(
+        img,
+        live_btn_rect,
+        "LIVE",
+        BTN_BLUE if is_live_mode else BTN_BG,
+        BTN_TEXT,
+        scale=TIMELINE_BTN_SCALE,
+        thick=TIMELINE_BTN_THICK,
+    )
+    draw_button(
+        img,
+        review_btn_rect,
+        "REVIEW",
+        BTN_BLUE if (not is_live_mode) else BTN_BG,
+        BTN_TEXT,
+        scale=TIMELINE_BTN_SCALE,
+        thick=TIMELINE_BTN_THICK,
+    )
     return review_btn_rect[2]
 
 
@@ -150,7 +169,7 @@ def draw_timeline_ui(img, x0, y0, w, h,
 
     right_of_toggle = draw_mode_toggle(img, x0 + pad, btn_row_y0, btn_row_h, is_live_mode)
 
-    btn_w = 72
+    btn_w = 82
     gap = 8
     xR = x0 + w - pad
 
@@ -176,9 +195,33 @@ def draw_timeline_ui(img, x0, y0, w, h,
     can_clear = (not is_recording) and (duration_s > 0.0)
     clr_text_col = BTN_TEXT if can_clear else BTN_DIM
 
-    draw_button(img, rec_btn_rect, rec_label, rec_fill, BTN_TEXT, scale=UI_SCALE_SMALL)
-    draw_button(img, play_btn_rect, play_label, play_fill, play_text_col, scale=UI_SCALE_SMALL)
-    draw_button(img, clear_btn_rect, "CLEAR", BTN_BG, clr_text_col, scale=UI_SCALE_SMALL)
+    draw_button(
+        img,
+        rec_btn_rect,
+        rec_label,
+        rec_fill,
+        BTN_TEXT,
+        scale=TIMELINE_BTN_SCALE,
+        thick=TIMELINE_BTN_THICK,
+    )
+    draw_button(
+        img,
+        play_btn_rect,
+        play_label,
+        play_fill,
+        play_text_col,
+        scale=TIMELINE_BTN_SCALE,
+        thick=TIMELINE_BTN_THICK,
+    )
+    draw_button(
+        img,
+        clear_btn_rect,
+        "CLEAR",
+        BTN_BG,
+        clr_text_col,
+        scale=TIMELINE_BTN_SCALE,
+        thick=TIMELINE_BTN_THICK,
+    )
 
     status_left = right_of_toggle + 12
     status_right = rec_btn_rect[0] - 10
@@ -197,9 +240,24 @@ def draw_timeline_ui(img, x0, y0, w, h,
         ws = float(_clamp(pinned_start, 0.0, max(0.0, duration_s - SEG_SECONDS)))
         status += f" | WIN {ws:0.1f}-{(ws + SEG_SECONDS):0.1f}s"
 
-    status = _fit_text_to_width_ascii(status, status_w, font=UI_FONT, scale=UI_SCALE_SMALL, thickness=1)
+    status = _fit_text_to_width_ascii(
+        status,
+        status_w,
+        font=PANEL_FONT,
+        scale=UI_SCALE_SMALL,
+        thickness=PANEL_TEXT_THICK,
+    )
     if status:
-        cv2.putText(img, status, (status_left, status_row_y), UI_FONT, UI_SCALE_SMALL, TL_TEXT, 1, cv2.LINE_AA)
+        cv2.putText(
+            img,
+            status,
+            (status_left, status_row_y),
+            PANEL_FONT,
+            UI_SCALE_SMALL,
+            TL_TEXT,
+            PANEL_TEXT_THICK,
+            cv2.LINE_AA,
+        )
 
     bar_x0 = x0 + pad
     bar_x1 = x0 + w - pad
@@ -226,7 +284,16 @@ def draw_timeline_ui(img, x0, y0, w, h,
             x = t_to_x(t)
             if last_x is None or abs(x - last_x) >= 54:
                 cv2.line(img, (x, tick_y0), (x, tick_y1), TL_TICK, 1, cv2.LINE_AA)
-                cv2.putText(img, f"{int(round(t))}s", (x - 10, label_y), UI_FONT, 0.40, TL_TEXT_DIM, 1, cv2.LINE_AA)
+                cv2.putText(
+                    img,
+                    f"{int(round(t))}s",
+                    (x - 10, label_y),
+                    PANEL_FONT,
+                    0.40,
+                    TL_TEXT_DIM,
+                    PANEL_TEXT_THICK,
+                    cv2.LINE_AA,
+                )
                 last_x = x
             t += step
 

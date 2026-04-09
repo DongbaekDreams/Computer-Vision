@@ -1,0 +1,12 @@
+{
+  "height_m": 1.76,
+  "segments_m": {
+    "shoulder_width": 0.46,
+    "hip_width": 0.35,
+    "torso": 0.5,
+    "upper_arm": 0.28,
+    "forearm": 0.27,
+    "thigh": 0.43,
+    "shank": 0.43
+  }
+}

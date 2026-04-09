@@ -2,19 +2,19 @@
 
 import cv2
 
-from config import JOINT_DOT_R, JOINT_OUTLINE_R, JOINT_OUTLINE_THICK
+from config import JOINT_DOT_R, JOINT_OUTLINE_R, JOINT_OUTLINE_THICK, PANEL_FONT, PANEL_TEXT_THICK
 from landmarks import EDGES, EDGE_COLORS, LEFT_IDXS, RIGHT_IDXS, edge_thickness
 from pose_processor import vis_ok
 
 
 def joint_colors(idx):
-    outline = (235, 235, 235)
+    outline = (240, 242, 248)
     if idx in LEFT_IDXS:
-        dot = (180, 170, 120)
+        dot = (240, 195, 120)
     elif idx in RIGHT_IDXS:
-        dot = (160, 140, 200)
+        dot = (215, 165, 245)
     else:
-        dot = (200, 200, 200)
+        dot = (210, 215, 225)
     return outline, dot
 
 
@@ -48,9 +48,9 @@ def draw_skeleton_on_video(video, pts, vis, show_skeleton, show_joints, show_vis
                         video,
                         f"{vis[idx]:.2f}",
                         (int(p[0]) + 10, int(p[1]) - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX,
+                        PANEL_FONT,
                         0.45,
                         (240, 240, 240),
-                        1,
+                        PANEL_TEXT_THICK,
                         cv2.LINE_AA,
                     )

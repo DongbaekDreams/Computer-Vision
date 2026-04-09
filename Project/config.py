@@ -15,10 +15,10 @@ MODELS_DIR = _PROJECT_DIR / "models"
 CAM_INDEX = 0
 WINDOW = "MediaPipe Pose (Tasks) - Dashboard (q to quit)"
 
-# Dashboard layout
+# Dashboard layout (native pixel size of the composed frame; larger = sharper UI/video pane)
 PANEL_W = 500
-VIEW_H = 900
-VIEW_W = 1600
+VIEW_H = 1288
+VIEW_W = 1920
 VIDEO_PAD = 14
 
 # Right-side plot + preview
@@ -28,48 +28,91 @@ PLOT_PAD = 14
 # Live buffer + recording
 MAX_REC_SECONDS = 60.0
 LIVE_BUFFER_SECONDS = 60.0
-SEG_SECONDS = 10.0
+SEG_SECONDS = 5.0
 
-# Plot styling
-PLOT_BG = (8, 8, 8)
-PLOT_RING = (40, 40, 40)
-PLOT_AXIS = (32, 32, 32)
+# High-res polar plot export (PNG); strokes scale with canvas in draw_polar_plot_segment
+POLAR_EXPORT_W = 3000
+POLAR_EXPORT_H = 2250
 
-# Global theme
-WINDOW_BG = (10, 12, 18)
-PANEL_BG = (18, 22, 30)
-PANEL_HEADER_BG = (28, 33, 44)
-PANEL_DIVIDER = (54, 62, 78)
-SURFACE_BG = (24, 29, 39)
-SURFACE_BG_ALT = (20, 24, 33)
-SURFACE_ELEVATED = (31, 37, 49)
-SURFACE_BORDER = (60, 70, 90)
-SURFACE_BORDER_SOFT = (44, 52, 68)
-TEXT_PRIMARY = (238, 242, 248)
-TEXT_SECONDARY = (177, 188, 204)
-TEXT_MUTED = (136, 148, 166)
-TEXT_DISABLED = (107, 118, 134)
-ACCENT = (239, 170, 84)
-ACCENT_ALT = (189, 135, 255)
-ACCENT_SUCCESS = (122, 205, 145)
-ACCENT_WARNING = (94, 204, 228)
-ACCENT_DANGER = (92, 96, 236)
-ACCENT_SOFT = (70, 86, 118)
-CARD_GLOW = (44, 58, 92)
-VIDEO_BG = (8, 10, 14)
+# Plot styling (BGR: keep B >= R on dark grays so fills read slate, not brown)
+PLOT_BG = (16, 15, 15)
+PLOT_RING = (46, 42, 40)
+PLOT_AXIS = (62, 58, 56)
+
+# Global theme — neutral / cool charcoal (R > B on dark UI reads warm in BGR)
+WINDOW_BG = (20, 19, 19)
+PANEL_BG = (27, 25, 25)
+PANEL_HEADER_BG = (35, 33, 32)
+PANEL_DIVIDER = (58, 54, 52)
+SURFACE_BG = (34, 32, 31)
+SURFACE_BG_ALT = (28, 26, 26)
+SURFACE_ELEVATED = (42, 39, 38)
+SURFACE_BORDER = (74, 70, 68)
+SURFACE_BORDER_SOFT = (56, 52, 51)
+TEXT_PRIMARY = (248, 249, 252)
+TEXT_SECONDARY = (176, 180, 190)
+TEXT_MUTED = (128, 132, 144)
+TEXT_DISABLED = (92, 96, 108)
+# UI accent: cool sky (BGR) — avoids tan/brown reads on panels and timeline chips
+ACCENT = (255, 195, 120)
+ACCENT_ALT = (215, 165, 255)
+ACCENT_SUCCESS = (125, 215, 155)
+ACCENT_WARNING = (105, 205, 240)
+ACCENT_DANGER = (110, 115, 250)
+ACCENT_SOFT = (78, 92, 118)
+CARD_GLOW = (58, 50, 48)
+VIDEO_BG = (16, 15, 15)
 
 # Spacing + sizing
 APP_PAD = 16
 CARD_PAD = 14
 CARD_GAP = 16
 SECTION_GAP = 14
-BTN_ROW_H = 30
+# Tighter vertical gap between key-help boxes so the panel fits with larger key type.
+PANEL_CONTROLS_SECTION_GAP = 8
+BTN_ROW_H = 34
+# Timeline / polar strip control chips (LIVE, REC, …): larger + bolder than body UI
+TIMELINE_BTN_SCALE = 0.62
+TIMELINE_BTN_THICK = 1
 CONTROL_ROW_H = 28
-TIMELINE_H = 86
+TIMELINE_H = 96
 
 # Display behavior
 VIDEO_MAX_SCALE = 1.0
 VIDEO_SCALE = 1.0
+
+# Pose inference input scale (0,1] for non-primary cameras. 1.0 = same quality as primary.
+INFER_INPUT_SCALE = 1.0
+# Primary (main pane) uses full resolution so edge-of-frame detection is strongest.
+PRIMARY_INFER_INPUT_SCALE = 1.0
+
+# Infer non-primary every N loop ticks (reuse last pose between). Use 1 for full-rate skeleton
+# on the secondary tile; raise to 2–3 only if CPU cannot keep up after fixing per-camera trackers.
+MULTICAM_NONPRIMARY_INFER_EVERY_N = 1
+
+# When 2+ cameras: non-primary infer input scale (primary uses PRIMARY_INFER_INPUT_SCALE).
+MULTICAM_SECONDARY_INFER_INPUT_SCALE = 1.0
+
+# Extra grab() drains before read when 2+ cameras. Large values fight the driver and make
+# the preview look jittery; keep low (0–2). Raise only if frames are visibly stale.
+MULTICAM_USB_EXTRA_DRAIN = 0
+
+# Pose detector confidence gates. Lower = better edge/partial-body recovery (more jitter).
+POSE_MIN_DETECTION_CONF = 0.35
+POSE_MIN_PRESENCE_CONF = 0.35
+POSE_MIN_TRACKING_CONF = 0.35
+
+# Adaptive smoothing (One Euro) for landmarks.
+# Keeps slow movement stable and fast movement responsive with minimal overhead.
+SMOOTH_2D_ENABLED = True
+SMOOTH_2D_MIN_CUTOFF = 2.2
+SMOOTH_2D_BETA = 0.14
+SMOOTH_2D_D_CUTOFF = 1.0
+
+SMOOTH_3D_ENABLED = True
+SMOOTH_3D_MIN_CUTOFF = 1.4
+SMOOTH_3D_BETA = 0.06
+SMOOTH_3D_D_CUTOFF = 1.0
 
 # Mirror preview (and swap L/R so labels match what you see)
 MIRROR_VIEW = True
@@ -96,9 +139,15 @@ SHOW_CONSOLE = True
 # Visibility threshold for drawing
 VIS_MIN = 0.30
 
-# Tasks model asset (.task) - resolved relative to package
-TASK_PATH = str(MODELS_DIR / "pose_landmarker.task")
-TASK_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task"
+# Triangulated 3D preview (pose_3d_view): points live in chessboard / extrinsics world
+# coordinates. Tweak if the skeleton looks rotated (e.g. facing sideways vs cameras).
+POSE_3D_WORLD_Z_ROT_DEG = 90.0  # spin about board normal (+Z in OpenCV object frame); try -90 if wrong
+POSE_3D_WORLD_Y_ROT_DEG = 0.0  # optional extra yaw about +Y
+
+# Tasks model asset (.task) - resolved relative to package.
+# Use FULL for much better real-time responsiveness than HEAVY.
+TASK_PATH = str(MODELS_DIR / "pose_landmarker_full.task")
+TASK_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task"
 
 # Style
 EDGE_THICK = 4
@@ -117,13 +166,13 @@ CLIP_BG = SURFACE_BG_ALT
 TL_BG = SURFACE_BG
 TL_BORDER = SURFACE_BORDER
 TL_BAR = SURFACE_BG_ALT
-TL_TICK = (114, 126, 146)
+TL_TICK = (108, 102, 100)
 TL_TEXT = TEXT_PRIMARY
 TL_TEXT_DIM = TEXT_MUTED
 
-WIN_FILL = (56, 73, 105)
-WIN_BORDER = (224, 233, 246)
-WIN_HANDLE = (248, 250, 252)
+WIN_FILL = (52, 68, 96)
+WIN_BORDER = (195, 205, 222)
+WIN_HANDLE = (228, 232, 240)
 
 PLAY_TICK = (245, 245, 245)
 PLAY_TICK_DIM = TEXT_MUTED
@@ -138,20 +187,30 @@ BTN_GREEN = ACCENT_SUCCESS
 BTN_YELLOW = ACCENT_WARNING
 BTN_BLUE = ACCENT
 
-UI_FONT = cv2.FONT_HERSHEY_SIMPLEX
+# Duplex for general panel prose. Plain for key glyphs: thinner strokes, less "blobby" at larger sizes.
+PANEL_FONT = cv2.FONT_HERSHEY_DUPLEX
+CONTROL_KEY_FONT = cv2.FONT_HERSHEY_PLAIN
+UI_FONT = PANEL_FONT
 UI_SCALE = 0.56
 UI_SCALE_SMALL = 0.47
 UI_SCALE_TINY = 0.40
-TITLE_SCALE = 0.90
+TITLE_SCALE = 0.86
 SUBTITLE_SCALE = 0.52
 STAT_LABEL_SCALE = 0.50
-STAT_VALUE_SCALE = 1.04
-SECTION_TITLE_SCALE = 0.60
-TABLE_TITLE_SCALE = 0.64
+STAT_VALUE_SCALE = 0.98
+SECTION_TITLE_SCALE = 0.58
+TABLE_TITLE_SCALE = 0.60
 TABLE_LABEL_SCALE = 0.53
-TABLE_VALUE_SCALE = 0.78
-CONTROL_KEY_SCALE = 0.52
+TABLE_VALUE_SCALE = 0.74
+# Plain runs smaller per unit scale than Duplex. Larger scale = readable key column.
+CONTROL_KEY_SCALE = 0.92
 CONTROL_DESC_SCALE = 0.49
+# Vertical rhythm for key-help cards (scales with CONTROL_KEY_SCALE).
+KEY_HELP_ROW_H = 26
+KEY_HELP_HEAD_H = 24
+# Single-pixel strokes read far better than 2 on Hershey fonts at panel sizes.
+PANEL_TEXT_THICK = 1
+PANEL_TITLE_THICK = 1
 
 # Polar palette gallery
 PALETTE_GALLERY_TITLE = "Polar Styles"
@@ -160,14 +219,29 @@ PALETTE_GALLERY_CARD_W = 146
 PALETTE_GALLERY_CARD_H = 112
 PALETTE_GALLERY_CARD_GAP = 14
 PALETTE_GALLERY_COLS = 3
-PALETTE_GALLERY_BG = (17, 21, 29)
-PALETTE_GALLERY_BORDER = (88, 100, 124)
-PALETTE_GALLERY_PREVIEW_BG = (21, 26, 35)
-PALETTE_GALLERY_SCRIM = (6, 8, 14)
+PALETTE_GALLERY_BG = (33, 31, 30)
+PALETTE_GALLERY_BORDER = (76, 72, 70)
+PALETTE_GALLERY_PREVIEW_BG = (38, 36, 35)
+PALETTE_GALLERY_SCRIM = (12, 11, 11)
 PALETTE_GALLERY_TEXT = TEXT_PRIMARY
 PALETTE_GALLERY_TEXT_MUTED = TEXT_SECONDARY
 PALETTE_GALLERY_SELECTED = ACCENT
 PALETTE_GALLERY_KEY = "g"
+
+# Polar PNG export gallery (saved under Project/polar_exports/)
+EXPORT_GALLERY_TITLE = "Polar exports"
+EXPORT_GALLERY_SUBTITLE = "Click thumbnail: full view in center pane  |  wheel  |  ESC"
+EXPORT_GALLERY_CARD_W = 198
+EXPORT_GALLERY_CARD_H = 128
+EXPORT_GALLERY_COLS = 3
+EXPORT_GALLERY_GAP = 12
+EXPORT_GALLERY_INNER_PAD = 18
+EXPORT_GALLERY_TITLE_H = 56
+EXPORT_GALLERY_FOOT_H = 38
+EXPORT_GALLERY_SCROLLBAR_W = 8
+EXPORT_GALLERY_KEY = "e"
+
+EXPORT_VIEWER_CAPTION_H = 48
 
 
 def _bgr(hex_rgb: str):

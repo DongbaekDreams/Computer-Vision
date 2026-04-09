@@ -66,13 +66,13 @@ EDGES_FEET = [
 EDGES = EDGES_FACE + EDGES_TORSO + EDGES_ARMS + EDGES_LEGS + EDGES_FEET
 
 # ============================
-# MUTED ANATOMICAL PALETTE (BGR)
+# ANATOMICAL PALETTE (BGR) — cool neutrals + mint (no brown/tan arms)
 # ============================
-COL_FACE = (235, 235, 235)
-COL_TORSO = (200, 200, 200)
-COL_ARMS = (200, 150, 110)
-COL_LEGS = (140, 190, 140)
-COL_FEET = (105, 160, 105)
+COL_FACE = (238, 238, 245)
+COL_TORSO = (210, 212, 220)
+COL_ARMS = (225, 200, 140)
+COL_LEGS = (130, 200, 150)
+COL_FEET = (110, 175, 125)
 
 EDGE_COLORS = (
     [COL_FACE] * len(EDGES_FACE) +

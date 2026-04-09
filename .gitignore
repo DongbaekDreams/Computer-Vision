@@ -113,6 +113,8 @@ calib_frames/
 *.prototxt
 models/*.task
 models/*.prototxt
+!Project/models/
+!Project/models/pose_landmarker_full.task
 
 # =========================
 # Data / artifacts
@@ -127,3 +129,4 @@ models/*.prototxt
 # =========================
 console.log
 debug.log
+Project/calib_recordings/
