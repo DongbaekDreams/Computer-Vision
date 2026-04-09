@@ -96,6 +96,7 @@ calib_frames/
 *.png
 *.mp4
 *.webm
+*.avi
 
 # =========================
 # Models / weights (generated or downloadable)
