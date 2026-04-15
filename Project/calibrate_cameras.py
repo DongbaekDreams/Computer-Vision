@@ -57,8 +57,8 @@ from camera_config import (
 
 # Chessboard: INNER corner counts (where black meets white), not square counts.
 # A board often sold as "9x6 squares" is (8,5) inner corners; OpenCV needs inner counts.
-CHESSBOARD_INNER_CORNERS = (9, 6)  # (cols, rows); use (7, 7) for a standard 8x8 chessboard
-CHESSBOARD_SQUARE_SIZE_MM = 25.0  # used only for 3D object points scale (arbitrary units)
+CHESSBOARD_INNER_CORNERS = (7, 7)  # (cols, rows); standard 8x8 chessboard
+CHESSBOARD_SQUARE_SIZE_MM = 40.0  # used for board scale in calibration/extrinsics
 # If your print uses different grid, detection still tries these (unique) after the default:
 _CHESSBOARD_FALLBACK_SIZES = (
     (8, 5),
